@@ -247,8 +247,10 @@ export function createScene(container, notify = () => {}, onChange = () => {}) {
           if(record.original.map.flipY===false){ctx.translate(0,size);ctx.scale(1,-1);}
           ctx.drawImage(record.original.map.image,0,0,size,size);ctx.restore();
         }
+        // A GPU texture keeps its first size; after switching 4K↔8K it must be rebuilt or the viewport keeps the old resolution.
+        if (record[textureSlot] && record[textureSlot].userData.size !== size) { record[textureSlot].dispose(); record[textureSlot] = null; }
         if (!record[textureSlot]) {
-          const texture = new THREE.CanvasTexture(canvas); texture.colorSpace = channel === 'normal' ? THREE.NoColorSpace : THREE.SRGBColorSpace;
+          const texture = new THREE.CanvasTexture(canvas); texture.userData.size = size; texture.colorSpace = channel === 'normal' ? THREE.NoColorSpace : THREE.SRGBColorSpace;
           texture.flipY = true; texture.anisotropy = Math.min(renderer.capabilities.getMaxAnisotropy(), 8);
           record[textureSlot] = texture;
         }
