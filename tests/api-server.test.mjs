@@ -183,3 +183,45 @@ test('closing the browser request aborts the upstream generation exactly once', 
     assert.equal(calls, 1);
   });
 });
+
+test('saving a key from the page stores it server-side and never echoes it back', async () => {
+  let saved = null, store = null;
+  const options = {saveConfig: v => { saved = v; store = v; }, clearConfig: () => { store = null; },
+    configLoader: () => store ? {configured: true, baseUrl: store.baseUrl, apiKey: store.apiKey, model: '', source: '本机已保存'} : {configured: false}};
+  await withServer(async () => { throw new Error('no upstream'); }, async url => {
+    const r = await fetch(`${url}/api/config`, {method: 'POST', headers: {'Content-Type': 'application/json', Origin: origin}, body: JSON.stringify({baseUrl: 'https://example.test/v1/', apiKey: 'colleague-secret'})});
+    const text = await r.text();
+    assert.equal(r.status, 200);
+    assert.equal(saved.apiKey, 'colleague-secret');
+    assert.equal(saved.baseUrl, 'https://example.test/v1');
+    assert.doesNotMatch(text, /colleague-secret/);
+    const c = await (await fetch(`${url}/api/config`)).text();
+    assert.doesNotMatch(c, /colleague-secret/);
+    const del = await fetch(`${url}/api/config`, {method: 'DELETE', headers: {Origin: origin}});
+    assert.equal(del.status, 200); assert.equal(store, null);
+  }, options);
+});
+
+test('a foreign page cannot overwrite or clear the saved key', async () => {
+  let saved = false;
+  await withServer(async () => { throw new Error('no upstream'); }, async url => {
+    const r = await fetch(`${url}/api/config`, {method: 'POST', headers: {'Content-Type': 'application/json', Origin: 'https://evil.example'}, body: JSON.stringify({baseUrl: 'https://evil.example/v1', apiKey: 'x'})});
+    assert.equal(r.status, 403);
+    const n = await fetch(`${url}/api/config`, {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({baseUrl: 'https://evil.example/v1', apiKey: 'x'})});
+    assert.equal(n.status, 403);
+    assert.equal(saved, false);
+  }, {saveConfig: () => { saved = true; }, clearConfig: () => { saved = true; }});
+});
+
+test('static root serves the app and refuses paths outside it', async () => {
+  const {mkdtempSync, writeFileSync} = await import('node:fs');
+  const {tmpdir} = await import('node:os');
+  const {join} = await import('node:path');
+  const root = mkdtempSync(join(tmpdir(), 'wb-static-'));
+  writeFileSync(join(root, 'index.html'), '<!doctype html><title>映纹工坊</title>');
+  await withServer(async () => { throw new Error('no upstream'); }, async url => {
+    const r = await fetch(`${url}/`); assert.equal(r.status, 200); assert.match(await r.text(), /映纹工坊/);
+    const esc = await fetch(`${url}/..%2f..%2fetc%2fpasswd`); assert.notEqual(esc.status, 200);
+    const api = await fetch(`${url}/api/health`); assert.equal(api.status, 200);
+  }, {staticRoot: root});
+});

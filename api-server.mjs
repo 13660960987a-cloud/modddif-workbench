@@ -1,10 +1,12 @@
 import http from 'node:http';
-import { readServerConfig } from './env-config.mjs';
-import { pathToFileURL } from 'node:url';
+import { readServerConfig, saveUserConfig, clearUserConfig } from './env-config.mjs';
+import { pathToFileURL, fileURLToPath } from 'node:url';
+import { readFile, stat } from 'node:fs/promises';
+import { join, normalize, extname, sep } from 'node:path';
 
 const MAX_REQUEST = 96 * 1024 * 1024;
 const MAX_IMAGE = 64 * 1024 * 1024;
-const DEFAULT_ORIGINS = [5173, 5174, 4173, 8787].flatMap(port => ['localhost', '127.0.0.1'].map(host => `http://${host}:${port}`));
+const DEFAULT_ORIGINS = [5173, 5174, 4173, 8787, 17860].flatMap(port => ['localhost', '127.0.0.1'].map(host => `http://${host}:${port}`));
 class ApiError extends Error {
   constructor(message, status = 400) { super(message); this.status = status; }
 }
@@ -148,7 +150,21 @@ async function generate(body, {fetchImpl, timeoutMs, signal}) {
   } finally { clearTimeout(timer); signal?.removeEventListener('abort', cancel); }
 }
 
-export function createProxyServer({allowedOrigins = DEFAULT_ORIGINS, timeoutMs = 240000, fetchImpl = fetch, configLoader = readServerConfig} = {}) {
+const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.svg': 'image/svg+xml', '.png': 'image/png', '.jpg': 'image/jpeg', '.ico': 'image/x-icon', '.json': 'application/json', '.woff2': 'font/woff2', '.wasm': 'application/wasm' };
+
+// Serves the built page from `root` (the installer's app folder) so one process is the whole app.
+async function serveStatic(root, request, response) {
+  const path = decodeURIComponent(new URL(request.url, 'http://x').pathname);
+  const file = normalize(join(root, path === '/' ? 'index.html' : path));
+  if (file !== root && !file.startsWith(root + sep)) { response.writeHead(403); return response.end(); }
+  try {
+    const info = await stat(file); if (!info.isFile()) throw new Error();
+    response.writeHead(200, { 'Content-Type': MIME[extname(file).toLowerCase()] || 'application/octet-stream', 'Cache-Control': 'no-cache' });
+    response.end(await readFile(file));
+  } catch { response.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' }); response.end('未找到'); }
+}
+
+export function createProxyServer({allowedOrigins = DEFAULT_ORIGINS, timeoutMs = 240000, fetchImpl = fetch, configLoader = readServerConfig, staticRoot = null, saveConfig = saveUserConfig, clearConfig = clearUserConfig} = {}) {
   const origins = new Set(allowedOrigins);
   const server = http.createServer(async (request, response) => {
     response.setHeader('Cache-Control', 'no-store');
@@ -159,6 +175,9 @@ export function createProxyServer({allowedOrigins = DEFAULT_ORIGINS, timeoutMs =
       response.end(JSON.stringify(data));
     };
     try {
+      if (staticRoot && !request.url.startsWith('/api/') && (request.method === 'GET' || request.method === 'HEAD')) {
+        response.removeHeader('Cache-Control'); return serveStatic(staticRoot, request, response);
+      }
       const host = request.headers.host || '';
       if (!/^(?:127\.0\.0\.1|localhost):\d+$/.test(host)) throw new ApiError('代理仅允许本机地址访问。', 403);
       const origin = request.headers.origin;
@@ -190,6 +209,17 @@ export function createProxyServer({allowedOrigins = DEFAULT_ORIGINS, timeoutMs =
         const config = configLoader();
         return send(200, {configured:!!config.configured,baseUrl:config.baseUrl,model:config.model,source:config.source});
       }
+      // Saving or clearing a key changes state on disk: only the workbench page itself may do it.
+      if (request.url === '/api/config' && (request.method === 'POST' || request.method === 'DELETE')) {
+        if (!origin || !origins.has(origin)) throw new ApiError('只能在工作台页面里修改密钥。', 403);
+        if (request.method === 'DELETE') { clearConfig(); return send(200, {ok: true}); }
+        if (!/^application\/json(?:;|$)/i.test(request.headers['content-type'] || '')) throw new ApiError('请求必须使用 JSON 格式。', 415);
+        let body; try { body = JSON.parse((await readLimited(request, 16 * 1024, '配置')).toString('utf8')); } catch (e) { if (e instanceof ApiError) throw e; throw new ApiError('配置格式无效。'); }
+        const base = normalizeBaseUrl(String(body.baseUrl || ''));
+        try { saveConfig({baseUrl: base.href.replace(/\/$/, ''), apiKey: String(body.apiKey || '').trim()}); } catch (e) { throw new ApiError(e.message); }
+        const config = configLoader();
+        return send(200, {configured: !!config.configured, baseUrl: config.baseUrl, source: config.source});
+      }
       if (request.url === '/api/health' && request.method === 'GET') return send(200, {ok: true, service: '本地图片代理'});
       if (request.url !== '/api/generate') return send(404, {error: '接口不存在。'});
       if (request.method !== 'POST') return send(405, {error: '请使用 POST 请求。'});
@@ -219,7 +249,8 @@ export function createProxyServer({allowedOrigins = DEFAULT_ORIGINS, timeoutMs =
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   const port = Number(process.env.WORKBENCH_API_PORT || 8787);
   const allowedOrigins = process.env.WORKBENCH_ALLOWED_ORIGINS ? process.env.WORKBENCH_ALLOWED_ORIGINS.split(',').map(value => value.trim()).filter(Boolean) : DEFAULT_ORIGINS;
-  const server = createProxyServer({allowedOrigins});
+  const staticRoot = process.env.WORKBENCH_STATIC_ROOT ? normalize(process.env.WORKBENCH_STATIC_ROOT) : null;
+  const server = createProxyServer({allowedOrigins, staticRoot});
   server.on('error', error => { console.error(`本地图片代理启动失败：${error.code || '未知错误'}`); process.exitCode = 1; });
   server.listen(port, '127.0.0.1', () => console.log(`本地图片代理已启动：http://127.0.0.1:${port}`));
 }

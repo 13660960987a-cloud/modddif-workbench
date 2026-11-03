@@ -127,3 +127,5 @@ input[type=range]:disabled{opacity:.35}
 .zone-row{grid-template-columns:30px 1fr}
 .zone-swatch{width:30px;height:30px;display:flex;align-items:flex-end;justify-content:center}
 .zone-swatch small{font-size:9px;color:#fff;text-shadow:0 0 3px #000}
+.modal-copy.small{font-size:11px;color:#8a9497;margin-top:-4px}
+.modal-foot{display:flex;justify-content:space-between;align-items:center;gap:10px}
