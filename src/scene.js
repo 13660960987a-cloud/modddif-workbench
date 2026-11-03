@@ -580,7 +580,7 @@ export function createScene(container, notify = () => {}, onChange = () => {}) {
       const share2 = keep.map(() => 0); zones.share.forEach((v, k) => share2[remap[k]] += v);
       zones = { features: zones.features, remap, centers: keep.map(i => zones.centers[i]), params: keep.map(i => ({ ...zones.params[i] })), share: share2 };
     }
-    labelZones(); recompose(); notify(`已按颜色分出 ${count} 种材质，可逐个调整金属度和粗糙度。`);
+    labelZones(); recompose(); notify(`已按颜色分出 ${zones.params.length} 种材质，可逐个调整金属度和粗糙度。`);
     return getZones();
   }
   // Lightness plus strongly weighted chroma, so gold vs silver separates before light vs dark silver.
