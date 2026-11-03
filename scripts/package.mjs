@@ -36,7 +36,8 @@ for (const target of TARGETS) {
   const isMac = target.name.startsWith('mac');
   const isWin = target.name.startsWith('win');
   // Windows archives use ASCII names: older unzip tools garble non-ASCII paths.
-  const label = isWin ? `YingwenWorkbench-${target.name}` : `映纹工坊-${target.name}`;
+  // ASCII archive names: GitHub release uploads drop non-ASCII characters from file names.
+  const label = `YingwenWorkbench-${target.name}`;
   console.log(`\nPackaging ${label}...`);
 
   // 2. Download Node runtime (cached)

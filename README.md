@@ -12,8 +12,8 @@
 
 | 电脑 | 下载 | 打开方式 |
 |---|---|---|
-| Mac（M1/M2/M3/M4 芯片） | `映纹工坊-mac-arm64.zip` | 解压后**右键**「映纹工坊-mac-arm64」→「打开」→ 再点「打开」 |
-| Mac（Intel 芯片） | `映纹工坊-mac-x64.zip` | 同上 |
+| Mac（M1/M2/M3/M4 芯片） | `YingwenWorkbench-mac-arm64.zip` | 解压后**右键**「YingwenWorkbench-mac-arm64」→「打开」→ 再点「打开」 |
+| Mac（Intel 芯片） | `YingwenWorkbench-mac-x64.zip` | 同上 |
 | Windows 10 / 11 | `YingwenWorkbench-win-x64.zip` | 解压后双击 `Start-Yingwen-Workbench.bat` |
 
 > 不知道 Mac 是什么芯片：左上角苹果菜单 →「关于本机」，芯片写 Apple M 开头的选 arm64，写 Intel 的选 x64。
