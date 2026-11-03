@@ -7,7 +7,7 @@ import { transferBake } from './transfer-bake.js';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 import { bakeAO } from './ao-bake.js';
 import { GLTFExporter } from 'three/addons/exporters/GLTFExporter.js';
-import { bakeProjection, generateNormalMap, gpuLimits, checkBakeSize, accumulateView, finishAccumulator } from './texture-engine.js';
+import { bakeProjection, generateNormalMap, gpuLimits, checkBakeSize, accumulateView, accumulateMax, finishAccumulator } from './texture-engine.js';
 
 const canvasOf = size => Object.assign(document.createElement('canvas'), { width: size, height: size });
 const imageOf = url => new Promise((resolve, reject) => { const image = new Image(); image.onload = () => resolve(image); image.onerror = () => reject(new Error('无法读取图片，请使用 PNG、JPEG 或 WebP。')); image.src = url; });
@@ -37,10 +37,12 @@ export function createScene(container, notify = () => {}, onChange = () => {}) {
   const hemi = new THREE.HemisphereLight(0xe6ecff, 0x313039, .6);
   const key = new THREE.DirectionalLight(0xffeee2, 2.2); key.position.set(3, 4, 5);
   const fill = new THREE.DirectionalLight(0x9dbdff, .8); fill.position.set(-3, 2, -3);
+  const lightState = { angle: 31, height: .6, intensity: 1, unlit: false };
   scene.add(hemi, key, fill);
   const group = new THREE.Group(); scene.add(group);
   const grid = new THREE.GridHelper(6, 30, 0x33353c, 0x1c1e24); grid.position.y = -.01; grid.material.transparent = true; grid.material.opacity = .45; scene.add(grid);
   let model, pending, layers = [], redoStack = [], selectedChannel = 'color', renderMode = 'MAT', busy = false;
+  let emissiveStrength = 2;
   let records = [], meshes = [], previewMaterials = [], normalStrength = 1, modelName = '演示角色';
   // While a generated image waits for projection, the viewport renders from its snapshot camera.
   let viewLock = null, lockedCamera = null, lockedKey = '';
@@ -158,7 +160,7 @@ export function createScene(container, notify = () => {}, onChange = () => {}) {
     controls.update();
   }
   function disposeModel() {
-    group.clear(); records.forEach(r => { r.canvasTexture?.dispose(); r.normalTexture?.dispose(); r.ormTexture?.dispose(); r.material.dispose(); });
+    group.clear(); records.forEach(r => { r.canvasTexture?.dispose(); r.normalTexture?.dispose(); r.ormTexture?.dispose(); r.emissiveTexture?.dispose(); r.material.dispose(); });
     meshes.forEach(m => m.geometry.dispose()); previewMaterials.forEach(m => m.dispose());
     previewMaterials = []; records = []; meshes = []; layers = []; history.length = 0; redoStack = [];
   }
@@ -204,9 +206,9 @@ export function createScene(container, notify = () => {}, onChange = () => {}) {
   }
   function drawOriginal(record, channel, canvas) {
     const ctx = canvas.getContext('2d'); ctx.clearRect(0, 0, canvas.width, canvas.height);
-    const map = channel === 'color' ? record.original.map : record.original.normalMap;
-    ctx.fillStyle = channel === 'normal' ? '#8080ff' : `#${record.original.color.getHexString()}`;
-    if(channel==='normal'||!map?.image)ctx.fillRect(0, 0, canvas.width, canvas.height);
+    const map = channel === 'color' ? record.original.map : channel === 'emissive' ? record.original.emissiveMap : record.original.normalMap;
+    ctx.fillStyle = channel === 'normal' ? '#8080ff' : channel === 'emissive' ? `#${(record.original.emissive || new THREE.Color(0)).getHexString()}` : `#${record.original.color.getHexString()}`;
+    if(channel!=='color'||!map?.image)ctx.fillRect(0, 0, canvas.width, canvas.height);
     if (map?.image) {
       ctx.save();
       // GLTF textures use flipY=false; workbench canvases use canonical UV orientation.
@@ -217,14 +219,15 @@ export function createScene(container, notify = () => {}, onChange = () => {}) {
   }
   function recompose() {
     for (const record of records) {
-      for (const channel of ['color', 'normal']) {
+      for (const channel of ['color', 'normal', 'emissive']) {
         const relevant = layers.filter(l => l.channel === channel && l.visible && l.entries.some(e => e.key === record.key));
-        const materialSlot = channel === 'color' ? 'map' : 'normalMap';
-        const canvasSlot = channel === 'color' ? 'colorCanvas' : 'normalCanvas';
-        const textureSlot = channel === 'color' ? 'canvasTexture' : 'normalTexture';
+        const materialSlot = { color: 'map', normal: 'normalMap', emissive: 'emissiveMap' }[channel];
+        const canvasSlot = { color: 'colorCanvas', normal: 'normalCanvas', emissive: 'emissiveCanvas' }[channel];
+        const textureSlot = { color: 'canvasTexture', normal: 'normalTexture', emissive: 'emissiveTexture' }[channel];
         if (!relevant.length) {
           record.material[materialSlot] = record.original[materialSlot];
           if (channel === 'color') record.material.color.copy(record.original.color);
+          if (channel === 'emissive') { record.material.emissive.copy(record.original.emissive || new THREE.Color(0)); record.material.emissiveIntensity = record.original.emissiveIntensity ?? 1; }
           record.material.needsUpdate = true; continue;
         }
         const size = Math.max(...relevant.map(l => l.entries.find(e => e.key === record.key).canvas.width));
@@ -245,12 +248,13 @@ export function createScene(container, notify = () => {}, onChange = () => {}) {
           ctx.drawImage(record.original.map.image,0,0,size,size);ctx.restore();
         }
         if (!record[textureSlot]) {
-          const texture = new THREE.CanvasTexture(canvas); texture.colorSpace = channel === 'color' ? THREE.SRGBColorSpace : THREE.NoColorSpace;
+          const texture = new THREE.CanvasTexture(canvas); texture.colorSpace = channel === 'normal' ? THREE.NoColorSpace : THREE.SRGBColorSpace;
           texture.flipY = true; texture.anisotropy = Math.min(renderer.capabilities.getMaxAnisotropy(), 8);
           record[textureSlot] = texture;
         }
         record[textureSlot].needsUpdate = true; record.material[materialSlot] = record[textureSlot];
         if (channel === 'color') record.material.color.set(0xffffff);
+        if (channel === 'emissive') { record.material.emissive.set(0xffffff); record.material.emissiveIntensity = emissiveStrength; }
         if (channel === 'normal') { record.material.normalMapType = THREE.TangentSpaceNormalMap; record.material.normalScale.set(normalStrength, normalStrength); }
         record.material.needsUpdate = true;
       }
@@ -272,7 +276,7 @@ export function createScene(container, notify = () => {}, onChange = () => {}) {
     notify(`图片已就绪：${image.naturalWidth} × ${image.naturalHeight}，调整视角后点击投射。`);
     return { width: image.naturalWidth, height: image.naturalHeight };
   }
-  async function project({ size = 4096, channel = selectedChannel, scale = 1, offsetX = 0, offsetY = 0, rotation = 0, flipY = false, normalSpace = 'tangent', projectionSnapshot = null, normalBlend = false } = {}) {
+  async function project({ size = 4096, channel = selectedChannel, scale = 1, offsetX = 0, offsetY = 0, rotation = 0, flipY = false, normalSpace = 'tangent', projectionSnapshot = null, normalBlend = false, edgeFeather = 0 } = {}) {
     if (!pending) throw new Error('请先上传或生成一张 PNG 图片。');if(projectionSnapshot?.modelId&&projectionSnapshot.modelId!==model.uuid)throw new Error('生成图片对应的模型已更换，请重新生成当前视角。');
     if (busy) throw new Error('正在处理贴图，请稍候。');
     checkBakeSize(renderer, size); ensureMemory(size, 'bake');
@@ -281,7 +285,7 @@ export function createScene(container, notify = () => {}, onChange = () => {}) {
       await tick();
       // Use real materials to preserve material group indices in the UV baker.
       setRender('MAT');
-      const result = await bakeProjection({ renderer, meshes: bakeMeshes(projectionSnapshot), clipPlane: bakeClip(projectionSnapshot), camera: projectionSnapshot?.camera || camera, viewportAspect: projectionSnapshot?.aspect, image: pending.image, size, channel, scale, offsetX, offsetY, rotation, flipY, normalSpace });
+      const result = await bakeProjection({ renderer, meshes: bakeMeshes(projectionSnapshot), clipPlane: bakeClip(projectionSnapshot), camera: projectionSnapshot?.camera || camera, viewportAspect: projectionSnapshot?.aspect, image: pending.image, size, channel, scale, offsetX, offsetY, rotation, flipY, normalSpace, edgeFeather: edgeFeather || projectionSnapshot?.edgeFeather || 0 });
       const entries = result.map(e => ({ key: `${e.mesh.uuid}:${e.materialIndex}`, canvas: e.canvas }));
       if (!entries.length) throw new Error('没有可投射的 UV 网格。');
       addLayer(entries, channel, `${channel === 'normal' ? '法线投射' : '颜色投射'} · ${pending.name}`, channel === 'normal' && normalBlend);
@@ -328,8 +332,13 @@ export function createScene(container, notify = () => {}, onChange = () => {}) {
     const savedSize=renderer.getSize(new THREE.Vector2()), ratio=renderer.getPixelRatio(), mode=renderMode;
     const visibleGrid=grid.visible,visibleShadow=shadow.visible;grid.visible=false;shadow.visible=false;
     const background=scene.background;scene.background=new THREE.Color(0x777777);
+    // Disable tonemapping and IBL, render in flat/unlit mode: the AI must see and paint only albedo,
+    // not PBR lighting. Otherwise the returned image has baked-in specular and shadows that get
+    // lit a second time when projected back, causing whitening and ghosting.
+    const savedTone=renderer.toneMapping, savedEnv=scene.environment, savedEnvInt=scene.environmentIntensity;
+    renderer.toneMapping=THREE.NoToneMapping; scene.environment=null; scene.environmentIntensity=0;
     try {
-      if(mode!=='MAT')setRender('MAT');
+      setRender('FLA');
       renderer.setPixelRatio(1);renderer.setSize(1536,1536,false);renderer.render(scene,targetCamera);
       const image=renderer.domElement.toDataURL('image/png');
       // Same frame on a transparent background: alpha marks the mesh silhouette for background removal.
@@ -337,8 +346,9 @@ export function createScene(container, notify = () => {}, onChange = () => {}) {
       const mask=renderer.domElement.toDataURL('image/png');renderer.setClearAlpha(clearAlpha);
       return {image,mask,camera:targetCamera,aspect:1,modelId:model.uuid,size:1536,clip:activePlane?.clone()??null,hidden:meshes.filter(m=>!m.visible).map(m=>m.uuid)};
     } finally {
+      renderer.toneMapping=savedTone; scene.environment=savedEnv; scene.environmentIntensity=savedEnvInt;
       renderer.setPixelRatio(ratio);renderer.setSize(savedSize.x,savedSize.y,false);scene.background=background;grid.visible=visibleGrid;shadow.visible=visibleShadow;
-      if(mode!=='MAT')setRender(mode);
+      setRender(mode);
       renderer.render(scene,viewLock?framedCamera(viewLock.camera):camera);
     }
   }
@@ -408,7 +418,7 @@ export function createScene(container, notify = () => {}, onChange = () => {}) {
         for (const e of result) {
           const key = `${e.mesh.uuid}:${e.materialIndex}`;
           let a = acc.get(key); if (!a) acc.set(key, a = { color: new Uint8ClampedArray(size * size * 4), weight: new Float32Array(size * size) });
-          accumulateView(a, e.data.data);
+          (channel === 'emissive' ? accumulateMax : accumulateView)(a, e.data.data);
         }
       }
       const entries = [...acc].map(([key, a]) => {
@@ -631,7 +641,7 @@ export function createScene(container, notify = () => {}, onChange = () => {}) {
   function highlightZone(k) {
     for (const r of records) {
       r.material.emissiveMap?.userData?.zoneHighlight && r.material.emissiveMap.dispose();
-      if (k == null || !r.zoneLabels) { r.material.emissiveMap = r.original.emissiveMap || null; r.material.emissive?.copy(r.original.emissive || new THREE.Color(0)); r.material.needsUpdate = true; continue; }
+      if (k == null || !r.zoneLabels) { r.material.emissiveMap = r.emissiveTexture && layers.some(l => l.channel === 'emissive' && l.visible) ? r.emissiveTexture : (r.original.emissiveMap || null); if (r.material.emissiveMap === r.emissiveTexture && r.emissiveTexture) { r.material.emissive.set(0xffffff); r.material.emissiveIntensity = emissiveStrength; } else r.material.emissive?.copy(r.original.emissive || new THREE.Color(0)); r.material.needsUpdate = true; continue; }
       const size = Math.sqrt(r.zoneLabels.length), N = 1024, step = size / N, c = canvasOf(N), x = c.getContext('2d'), im = x.createImageData(N, N);
       for (let y = 0; y < N; y++) for (let xx = 0; xx < N; xx++) { const on = r.zoneLabels[Math.floor(y * step) * size + Math.floor(xx * step)] === k, p = (y * N + xx) * 4; im.data[p] = im.data[p + 1] = im.data[p + 2] = on ? 255 : 0; im.data[p + 3] = 255; }
       x.putImageData(im, 0, 0);
@@ -711,7 +721,7 @@ export function createScene(container, notify = () => {}, onChange = () => {}) {
     const sourceSizes = [];
     for (let i = 0; i < usable.length; i++) {
       const record = usable[i], canvas = canvasOf(size);
-      const composed = (channel === 'orm' || channel === 'unityMS' || channel === 'unityAO') ? record.ormCanvas : channel === 'color' ? record.colorCanvas : record.normalCanvas;
+      const composed = (channel === 'orm' || channel === 'unityMS' || channel === 'unityAO') ? record.ormCanvas : channel === 'emissive' ? record.emissiveCanvas : channel === 'color' ? record.colorCanvas : record.normalCanvas;
       const hasLayers = (channel === 'orm' || channel === 'unityMS' || channel === 'unityAO') ? !!record.ormCanvas : layers.some(l => l.channel === channel && l.visible && l.entries.some(e => e.key === record.key));
       const ctx = canvas.getContext('2d');
       if (!ctx) throw new Error(`浏览器无法创建 ${size}×${size} 画布（内存不足），请改用较低尺寸。`);
@@ -723,7 +733,7 @@ export function createScene(container, notify = () => {}, onChange = () => {}) {
         ctx.putImageData(im, 0, 0);
       }
       if (uvDown) flipCanvas(canvas);
-      const saved = await saveCanvas(canvas, `${modelName}-${channel === 'unityMS' ? 'MetallicSmoothness' : channel === 'unityAO' ? 'AO' : channel === 'orm' ? 'ORM' : channel === 'normal' ? 'Normal-OpenGL' : 'BaseColor'}-${usable.length > 1 ? `${i + 1}-` : ''}${size}.png`);
+      const saved = await saveCanvas(canvas, `${modelName}-${channel === 'emissive' ? 'Emissive' : channel === 'unityMS' ? 'MetallicSmoothness' : channel === 'unityAO' ? 'AO' : channel === 'orm' ? 'ORM' : channel === 'normal' ? 'Normal-OpenGL' : 'BaseColor'}-${usable.length > 1 ? `${i + 1}-` : ''}${size}.png`);
       canvas.width = canvas.height = 0;
       if (!saved) throw new Error(`${size}×${size} PNG 编码失败（通常是内存不足），请改用较低尺寸。`);
     }
@@ -755,10 +765,20 @@ export function createScene(container, notify = () => {}, onChange = () => {}) {
     getGpuLimits: () => gpuLimits(renderer),
     getCompositeSizes: () => records.map(r => ({ key: r.key, color: r.colorCanvas?.width || null, normal: r.normalCanvas?.width || null })),
     zoom: factor => { assertUnlocked(); if (camera.isOrthographicCamera) { camera.zoom /= factor; camera.updateProjectionMatrix(); } else camera.position.sub(controls.target).multiplyScalar(factor).add(controls.target); },
+    // Viewport lighting: rotate the key light to inspect normal detail, or switch it all off to see pure colour.
+    setLight: ({ angle, height, intensity, unlit } = {}) => {
+      if (angle != null || height != null) { const a = THREE.MathUtils.degToRad(angle ?? lightState.angle), h = height ?? lightState.height; lightState.angle = angle ?? lightState.angle; lightState.height = h;
+        key.position.set(Math.sin(a) * 5, 1 + h * 5, Math.cos(a) * 5); }
+      if (intensity != null) { lightState.intensity = intensity; key.intensity = 2.2 * intensity; fill.intensity = .8 * intensity; hemi.intensity = .6 * intensity; scene.environmentIntensity = .9 * intensity; }
+      if (unlit != null) { lightState.unlit = unlit; renderer.toneMapping = unlit ? THREE.NoToneMapping : THREE.ACESFilmicToneMapping; setRender(unlit ? 'FLA' : (renderMode === 'FLA' ? 'MAT' : renderMode)); }
+      return { ...lightState };
+    },
     setEnv: type => { key.color.set(type === 'warm' ? 0xffba7a : type === 'cool' ? 0xb6d8ff : 0xffeee2); fill.color.set(type === 'warm' ? 0xaa8899 : 0x9dbdff); },
+    setEmissiveStrength: value => { emissiveStrength = value; records.forEach(r => { if (r.material.emissiveMap === r.emissiveTexture && r.emissiveTexture) r.material.emissiveIntensity = value; }); },
+    hasEmissive: () => layers.some(l => l.channel === 'emissive' && l.visible),
     setNormalStrength: value => { normalStrength = value; records.forEach(r => r.material.normalScale?.set(value, value)); setRender(renderMode); },
     getModelInfo: () => ({ name: modelName, meshes: meshes.length, faces: meshes.reduce((n, m) => n + (m.geometry.index?.count || m.geometry.attributes.position.count) / 3, 0), uv: records.every(r => r.uv) }),
     getPending: () => pending,
-    getDebug: () => ({ renderer, camera, meshes, records, layers }),
+    getDebug: () => ({ renderer, camera, controls, meshes, records, layers }),
   };
 }

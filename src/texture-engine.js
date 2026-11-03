@@ -63,6 +63,7 @@ uniform bool normalFlipY;
 uniform bool viewSpaceNormal;
 uniform mat3 cameraRotation;
 uniform float fadeStart;
+uniform float edgeFeather;
 uniform bool clipOn;
 uniform vec4 clipPlane;
 uniform float fadeEnd;
@@ -125,7 +126,10 @@ void main() {
     vec3 tangentNormal = normalize(vec3(dot(worldNormal, T), dot(worldNormal, B), dot(worldNormal, N)));
     color.rgb = tangentNormal * 0.5 + 0.5;
   }
-  color.a *= opacity * smoothstep(fadeStart, fadeEnd, facing);
+  // Close-up patches fade out toward the image border so they blend into what is already painted.
+  vec2 edge = min(imageUV, 1.0 - imageUV);
+  float border = edgeFeather > 0.0 ? smoothstep(0.0, edgeFeather, min(edge.x, edge.y)) : 1.0;
+  color.a *= opacity * border * smoothstep(fadeStart, fadeEnd, facing);
   if (color.a < 0.001) discard;
   gl_FragColor = color;
 }`;
@@ -155,11 +159,25 @@ function flipRows(pixels, size) {
 /** Weighted running average of one view's bake into an accumulator (straight alpha = weight). */
 export function accumulateView(acc, pixels) {
   const { color, weight } = acc;
+  acc.cover ||= new Float32Array(weight.length);
   for (let i = 0, p = 0; i < weight.length; i++, p += 4) {
-    const w = pixels[p + 3] / 255; if (!w) continue;
+    const a = pixels[p + 3] / 255; if (!a) continue;
+    // Blend weight is facing^4: the most head-on view dominates, so two slightly misaligned
+    // AI images do not average into a double (ghosted) edge. Coverage still uses plain facing.
+    const w = a * a * a * a;
     const t = w / (weight[i] + w);
     color[p] += (pixels[p] - color[p]) * t; color[p + 1] += (pixels[p + 1] - color[p + 1]) * t; color[p + 2] += (pixels[p + 2] - color[p + 2]) * t;
-    weight[i] += w;
+    weight[i] += w; acc.cover[i] += a;
+  }
+}
+/** Emission merge: brightest view wins, so a glow seen by one view is not averaged away by views that missed it. */
+export function accumulateMax(acc, pixels) {
+  const { color, weight } = acc;
+  acc.cover ||= new Float32Array(weight.length);
+  for (let i = 0, p = 0; i < weight.length; i++, p += 4) {
+    const a = pixels[p + 3] / 255; if (!a) continue;
+    for (let k = 0; k < 3; k++) { const v = pixels[p + k] * a; if (v > color[p + k]) color[p + k] = v; }
+    if (a > weight[i]) weight[i] = a; acc.cover[i] += a;
   }
 }
 /** Turns an accumulator into straight-alpha RGBA; coverage saturates once views add up to `full` weight. */
@@ -171,7 +189,7 @@ export function finishAccumulator(acc, { normal = false, full = 0.5 } = {}) {
       const x = color[p] / 127.5 - 1, y = color[p + 1] / 127.5 - 1, z = color[p + 2] / 127.5 - 1, l = Math.hypot(x, y, z) || 1;
       color[p] = (x / l + 1) * 127.5; color[p + 1] = (y / l + 1) * 127.5; color[p + 2] = (z / l + 1) * 127.5;
     }
-    color[p + 3] = Math.min(1, weight[i] / full) * 255;
+    color[p + 3] = Math.min(1, (acc.cover ? acc.cover[i] : weight[i]) / full) * 255;
   }
   return color;
 }
@@ -180,7 +198,7 @@ export function finishAccumulator(acc, { normal = false, full = 0.5 } = {}) {
  * scale=1 fits the source image within the viewport. offsetX/Y are viewport fractions.
  * Model UVs must already exist and be non-overlapping for independent surface painting.
  */
-export async function bakeProjection({ renderer, meshes, camera, image, size = 4096, opacity = 1, scale = 1, offsetX = 0, offsetY = 0, rotation = 0, channel = 'color', flipY = false, normalSpace = 'tangent', viewportAspect, fade = [0.08, 0.24], raw = false, clipPlane = null, onProgress = () => {} }) {
+export async function bakeProjection({ renderer, meshes, camera, image, size = 4096, opacity = 1, scale = 1, offsetX = 0, offsetY = 0, rotation = 0, channel = 'color', flipY = false, normalSpace = 'tangent', viewportAspect, fade = [0.08, 0.24], raw = false, edgeFeather = 0, clipPlane = null, onProgress = () => {} }) {
   if (!meshes?.length) throw new Error('请先导入带 UV 的模型。');
   checkBakeSize(renderer, size);
   const geometryPairs = meshes.filter(m => m.isMesh).map(mesh => ({ mesh, geometry: worldGeometry(mesh) }));
@@ -211,7 +229,7 @@ export async function bakeProjection({ renderer, meshes, camera, image, size = 4
       eye: { value: camera.getWorldPosition(new THREE.Vector3()) }, viewDirection: { value: camera.getWorldDirection(new THREE.Vector3()) },
       orthographic: { value: !!camera.isOrthographicCamera }, fit: { value: fit }, viewportAspect: { value: aspect }, offset: { value: new THREE.Vector2(offsetX, offsetY) },
       scale: { value: scale }, angle: { value: rotation * Math.PI / 180 }, opacity: { value: opacity }, normalMode: { value: channel === 'normal' }, normalFlipY: { value: flipY }, viewSpaceNormal: { value: normalSpace === 'view' }, cameraRotation: { value: new THREE.Matrix3().setFromMatrix4(camera.matrixWorld) },
-      fadeStart: { value: fade[0] }, fadeEnd: { value: fade[1] },
+      fadeStart: { value: fade[0] }, fadeEnd: { value: fade[1] }, edgeFeather: { value: edgeFeather },
       clipOn: { value: !!clipPlane }, clipPlane: { value: clipPlane ? new THREE.Vector4(clipPlane.normal.x, clipPlane.normal.y, clipPlane.normal.z, clipPlane.constant) : new THREE.Vector4() }
     }, vertexShader, fragmentShader, side: THREE.DoubleSide, depthTest: false, depthWrite: false,
     transparent: false, blending: THREE.NoBlending, toneMapped: false

@@ -165,3 +165,27 @@ export async function delightImage(imageUrl, { strength = 0.6 } = {}) {
   const url = canvas.toDataURL('image/png'); canvas.width = canvas.height = 0; small.width = small.height = 0;
   return { url };
 }
+
+/**
+ * Cleans an AI emission image: keeps only bright pixels (soft threshold on the brightest channel,
+ * so saturated red/blue glows survive) and reports how much of the mesh silhouette is dark.
+ * A real emission map is dark almost everywhere on the mesh; a low darkShare means the model
+ * painted ordinary colours instead.
+ */
+export async function emissiveFilter(imageUrl, { maskUrl = null, low = 0.14, high = 0.34 } = {}) {
+  const image = await loadImage(imageUrl);
+  const w = image.naturalWidth, h = image.naturalHeight, n = w * h;
+  const { canvas, ctx, data } = pixelsOf(image, w, h), d = data.data;
+  let inside = null;
+  if (maskUrl) { const mask = await loadImage(maskUrl), md = pixelsOf(mask, w, h).data.data; inside = new Uint8Array(n); for (let i = 0; i < n; i++) inside[i] = md[i * 4 + 3] > 127 ? 1 : 0; }
+  let total = 0, dark = 0;
+  for (let i = 0, p = 0; i < n; i++, p += 4) {
+    const v = Math.max(d[p], d[p + 1], d[p + 2]) / 255;
+    if (!inside || inside[i]) { total++; if (v < low) dark++; }
+    const t = Math.min(1, Math.max(0, (v - low) / (high - low))), k = t * t * (3 - 2 * t);
+    d[p] *= k; d[p + 1] *= k; d[p + 2] *= k;
+  }
+  ctx.putImageData(data, 0, 0);
+  const url = canvas.toDataURL('image/png'); canvas.width = canvas.height = 0;
+  return { url, darkShare: total ? dark / total : 1 };
+}
