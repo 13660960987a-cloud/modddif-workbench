@@ -1,0 +1,53 @@
+<!doctype html><html lang="zh"><meta charset="utf-8"><title>PBR 功能验证</title><body style="background:#151719;color:#ddd;font:16px system-ui"><h1>PBR 功能验证</h1><button id="run">运行验证</button><pre id="result">待运行</pre><script type="module">
+import * as THREE from '/node_modules/three/build/three.module.js';
+import { matteImage, delightImage } from '/src/matting.js';
+import { transferBake } from '/src/transfer-bake.js';
+import { bakeAO } from '/src/ao-bake.js';
+const out = document.querySelector('#result');
+const check = (ok, label) => { if (!ok) throw Error(label); out.textContent += '\n✓ ' + label; };
+const pixelsOf = async url => { const im = new Image(); im.src = url; await im.decode(); const c = Object.assign(document.createElement('canvas'), { width: im.width, height: im.height }); const x = c.getContext('2d'); x.drawImage(im, 0, 0); return { d: x.getImageData(0, 0, im.width, im.height).data, w: im.width }; };
+const at = (p, x, y) => [...p.d.subarray((y * p.w + x) * 4, (y * p.w + x) * 4 + 4)];
+document.querySelector('#run').onclick = async () => {
+  try {
+    out.textContent = '开始';
+    // 1. Matting: grey border flood-filled away, enclosed grey hole inside a ring removed, grey inside silhouette kept.
+    const c = Object.assign(document.createElement('canvas'), { width: 256, height: 256 }), x = c.getContext('2d');
+    x.fillStyle = '#777'; x.fillRect(0, 0, 256, 256);
+    x.strokeStyle = '#c33'; x.lineWidth = 24; x.beginPath(); x.arc(128, 128, 70, 0, Math.PI * 2); x.stroke();   // ring with grey hole
+    x.fillStyle = '#777'; x.fillRect(200, 20, 30, 30);                                                         // grey patch inside silhouette
+    x.fillStyle = '#3a6'; x.fillRect(190, 10, 50, 10);
+    const m = Object.assign(document.createElement('canvas'), { width: 256, height: 256 }), mx = m.getContext('2d');
+    mx.strokeStyle = '#fff'; mx.lineWidth = 24; mx.beginPath(); mx.arc(128, 128, 70, 0, Math.PI * 2); mx.stroke(); mx.fillStyle = '#fff'; mx.fillRect(185, 5, 60, 60);
+    const r = await matteImage(c.toDataURL(), { maskUrl: m.toDataURL() }), p = await pixelsOf(r.url);
+    check(at(p, 5, 5)[3] === 0, '外圈灰底抠成透明');
+    check(at(p, 128, 128)[3] === 0, '被圆环包住的灰色空洞也抠掉');
+    check(at(p, 128, 58)[3] > 200 && at(p, 128, 58)[0] > 150, '物体本身保留');
+    check(at(p, 215, 35)[3] > 200, '模型轮廓内部的灰色不被误删');
+    // 2. Delight: highlight compressed, colour hue kept.
+    const h = Object.assign(document.createElement('canvas'), { width: 64, height: 64 }), hx = h.getContext('2d');
+    hx.fillStyle = '#806040'; hx.fillRect(0, 0, 64, 64); hx.fillStyle = '#fff'; hx.fillRect(28, 28, 8, 8);
+    const dl = await pixelsOf((await delightImage(h.toDataURL(), { strength: .8 })).url);
+    check(at(dl, 31, 31)[0] < 245, '高光被压低');
+    const base = at(dl, 5, 5); check(base[0] > base[1] && base[1] > base[2], '固有色色相不变');
+    // 3. Transfer bake: same triangles, different UV → source colour lands at the right target texels.
+    const renderer = new THREE.WebGLRenderer(); renderer.setSize(64, 64);
+    const geo = new THREE.PlaneGeometry(1, 1, 1, 1);                      // source UV: identity
+    const tgt = geo.clone(); const uv = tgt.attributes.uv; for (let i = 0; i < uv.count; i++) uv.setXY(i, 1 - uv.getX(i), uv.getY(i)); // target UV mirrored in u
+    const src = Object.assign(document.createElement('canvas'), { width: 64, height: 64 }), sx = src.getContext('2d');
+    sx.fillStyle = '#f00'; sx.fillRect(0, 0, 32, 64); sx.fillStyle = '#00f'; sx.fillRect(32, 0, 32, 64);   // left red, right blue
+    const tex = new THREE.CanvasTexture(src); tex.flipY = false;
+    const { canvases, matched, total } = await transferBake({ renderer, target: tgt, source: geo, maps: [{ name: 'color', texture: tex }], size: 64 });
+    check(matched === total, `三角形全部对应 ${matched}/${total}`);
+    const tp = canvases.color.getContext('2d').getImageData(0, 0, 64, 64).data, q = (x0, y0) => [...tp.subarray((y0 * 64 + x0) * 4, (y0 * 64 + x0) * 4 + 3)];
+    check(q(8, 32)[2] > 200 && q(56, 32)[0] > 200, '镜像 UV 后颜色左右互换，位置正确');
+    // 4. AO: a plane under a box is occluded where the box stands.
+    const floor = new THREE.Mesh(new THREE.PlaneGeometry(2, 2).rotateX(-Math.PI / 2), new THREE.MeshBasicMaterial());
+    const box = new THREE.Mesh(new THREE.BoxGeometry(.6, .6, .6).translate(0, .3, 0), new THREE.MeshBasicMaterial());
+    box.geometry.deleteAttribute('uv'); floor.updateMatrixWorld(); box.updateMatrixWorld();
+    const ao = await bakeAO({ renderer, meshes: [floor, box], size: 64, samples: 48 });
+    const a = ao.get(`${floor.uuid}:0`).getContext('2d').getImageData(0, 0, 64, 64).data, aoAt = (x0, y0) => a[(y0 * 64 + x0) * 4];
+    check(aoAt(2, 2) > aoAt(32, 41) + 40, '盒子脚下比开阔处更暗');
+    out.textContent += '\n全部通过';
+  } catch (e) { out.textContent += '\n✗ ' + e.message; console.error(e); }
+};
+</script></body></html>

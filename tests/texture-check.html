@@ -1,0 +1,24 @@
+<!doctype html><html lang="zh"><meta charset="utf-8"><title>贴图引擎验证</title><body style="background:#151719;color:#ddd;font:16px system-ui"><h1>贴图引擎验证</h1><button id="run">运行 GPU 验证</button><pre id="result">待运行</pre><div id="view"></div><script type="module">
+import * as THREE from '/node_modules/three/build/three.module.js';
+import {bakeProjection,generateNormalMap} from '/src/texture-engine.js';
+const output=document.querySelector('#result');
+const check=(ok,label)=>{if(!ok)throw Error(label);output.textContent+='\n✓ '+label;};
+const canvas=(r,g,b)=>{const c=document.createElement('canvas');c.width=c.height=64;const ctx=c.getContext('2d');ctx.fillStyle=`rgb(${r},${g},${b})`;ctx.fillRect(0,0,64,64);return c;};
+const pixel=c=>[...c.getContext('2d').getImageData(c.width/2,c.height/2,1,1).data];
+document.querySelector('#run').onclick=async()=>{
+try{
+output.textContent='开始';
+const renderer=new THREE.WebGLRenderer();renderer.setSize(600,400);document.querySelector('#view').append(renderer.domElement);
+const camera=new THREE.PerspectiveCamera(40,1.5,.1,20);camera.position.set(0,0,3);camera.lookAt(0,0,0);camera.updateMatrixWorld();
+const front=new THREE.Mesh(new THREE.PlaneGeometry(1,1),new THREE.MeshStandardMaterial());front.updateMatrixWorld();
+const back=new THREE.Mesh(new THREE.PlaneGeometry(1,1),new THREE.MeshStandardMaterial());back.position.z=-.2;back.updateMatrixWorld();
+const color=await bakeProjection({renderer,meshes:[front,back],camera,image:canvas(240,40,30),size:4096});
+check(color[0].canvas.width===4096,'输出4096×4096');let p=pixel(color[0].canvas);check(p[0]>230&&p[1]<50&&p[3]>250,'前表面颜色与Alpha正确');check(pixel(color[1].canvas)[3]===0,'后方遮挡表面不受投射');
+const n=await bakeProjection({renderer,meshes:[front],camera,image:canvas(128,128,255),size:128,channel:'normal'});p=pixel(n[0].canvas);check(Math.abs(p[0]-128)<3&&Math.abs(p[1]-128)<3&&p[2]>252,'局部平面法线保持中性');
+const nrot=await bakeProjection({renderer,meshes:[front],camera,image:canvas(218,128,218),size:128,channel:'normal',rotation:90});p=pixel(nrot[0].canvas);check(Math.abs(p[0]-128)<8&&p[1]>200,'局部法线随投射旋转90度');
+front.rotation.y=Math.PI/6;front.updateMatrixWorld();
+const viewN=await bakeProjection({renderer,meshes:[front],camera,image:canvas(128,128,255),size:128,channel:'normal',normalSpace:'view'});p=pixel(viewN[0].canvas);check(p[0]<90&&p[2]>225,'相机空间法线转换到旋转表面的切线空间');
+const flat=await generateNormalMap({source:canvas(140,140,140),size:128});p=pixel(flat);check(p[0]===128&&p[1]===128&&p[2]===255,'均匀高度生成平面法线');
+output.textContent+='\n全部通过';renderer.dispose();
+}catch(e){output.textContent+='\n失败：'+e.stack;}}
+</script></body></html>

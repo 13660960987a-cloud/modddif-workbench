@@ -1,0 +1,7 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {buildGenerationPrompt} from '../src/generation-prompts.js';
+test('reference-only workflow has full alignment prompt without user text',()=>{const prompt=buildGenerationPrompt();assert.match(prompt,/Image 1/);assert.match(prompt,/Image 2/);assert.match(prompt,/STRICT ALIGNMENT/);assert.match(prompt,/NOT a UV atlas/);});
+test('normal generation uses camera space, optional user requirement is appended',()=>{const prompt=buildGenerationPrompt({channel:'normal',extra:'精细织物'});assert.match(prompt,/CAMERA\/VIEW-SPACE/);assert.match(prompt,/camera-right/);assert.match(prompt,/精细织物/);});
+test('six-view prompts name the side and keep the alignment contract',()=>{const back=buildGenerationPrompt({view:'back'});assert.match(back,/BACK view/);assert.match(back,/STRICT ALIGNMENT/);assert.doesNotMatch(buildGenerationPrompt(),/BACK view/);assert.match(buildGenerationPrompt({channel:'normal',view:'top'}),/TOP view/);});
+test('section-cut prompt explains the removed half',()=>{const p=buildGenerationPrompt({view:'left',cut:true});assert.match(p,/SECTION/);assert.match(p,/inner thigh/);assert.doesNotMatch(buildGenerationPrompt({view:'left'}),/SECTION/);});

@@ -1,0 +1,10 @@
+node_modules/
+dist/
+output/
+.env
+.env.*
+*.env
+*.key
+*.pem
+*.log
+.DS_Store
