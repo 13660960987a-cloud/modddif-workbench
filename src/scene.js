@@ -193,7 +193,7 @@ export function createScene(container, notify = () => {}, onChange = () => {}) {
   }
   async function loadFile(file) {
     if (busy) throw new Error('请等当前操作完成。');
-    if (file.size > 150 * 1024 * 1024) throw new Error('模型超过 150 MB，请先简化后再导入。');
+    if (file.size > 500 * 1024 * 1024) throw new Error('模型超过 500 MB，请先简化后再导入。');
     const extension = file.name.split('.').pop().toLowerCase();
     if (!['glb', 'obj', 'fbx'].includes(extension)) throw new Error('请使用内嵌贴图的 GLB，或带 UV 的 OBJ / FBX。');
     const url = URL.createObjectURL(file);
