@@ -5,6 +5,8 @@ import { matteImage, delightImage, emissiveFilter } from './matting.js';
 import { detailNormal } from './normal-detail.js';
 import { createBrushMask } from './brush-mask.js';
 import { createOrmBrush } from './orm-brush.js';
+import { mountQualityPanel } from './quality-panel.js';
+import { mountBatchPanel } from './batch-panel.js';
 
 const icons={
  cube:'<path d="m12 3 8 4.5v9L12 21l-8-4.5v-9L12 3Z"/><path d="m4.3 7.7 7.7 4.5 7.7-4.5M12 12.2V21"/>',
@@ -65,7 +67,7 @@ let scene;
 scene=createScene($('#viewport'),toast,()=>refreshLayers());
 if(import.meta.env.DEV)window.__workbench={scene,state};
 // Automation bridge: lets AI agents and scripts drive the workbench programmatically.
-import('./automation.js').then(m=>m.startAutomation({scene,state,callScene,loadSource,toast,buildGenerationPrompt,buildUvRefinePrompt,currentModel})).catch(()=>{});
+import('./automation.js').then(m=>m.startAutomation({scene,state,callScene,loadSource,toast,buildGenerationPrompt,buildUvRefinePrompt,currentModel,autoMatte,prepareNormal})).catch(e=>toast(`自动化接口初始化失败：${e.message}`,true));
 async function callScene(method,...args){if(typeof scene[method]!=='function')throw new Error('该操作尚未就绪，请稍后重试。');return scene[method](...args);}
 async function runTask(label,fn){if(state.busy)return;state.busy=true;status(label);$$('.generate-btn').forEach(b=>b.disabled=true);try{const result=await fn();refreshLayers();return result}catch(error){if(error.name==='AbortError')toast('已取消生成，视角已恢复可操作。');else toast(error.message||'操作失败，请重试。',true)}finally{state.busy=false;updateButtons();syncLock();status('实时 3D 预览');}}
 function updateButtons(){if(typeof syncBrushUI==='function'&&$('#brushBox'))$('#brushBox').hidden=!state.source;const uvMap=!!state.source&&!state.source.projectionSnapshot&&state.uvMatch>.7;$('#replaceUVBtn').classList.toggle('generate-btn',uvMap);$('#replaceUVBtn').classList.toggle('secondary-button',!uvMap);const box=$('.fine-tune');if(uvMap&&$('#replaceUVBtn').parentElement!==box.parentElement)box.before($('#replaceUVBtn'));else if(!uvMap&&$('#replaceUVBtn').parentElement!==box)box.append($('#replaceUVBtn'));$('#projectBtn').classList.toggle('secondary-generate',uvMap);$('#opacitySlider').disabled=!(scene?.getLayers?.()||[]).length;for(const id of ['projectBtn','replaceUVBtn','downloadSource'])$(`#${id}`).disabled=!state.source||state.busy;$('#projectBtn').title=state.source?'':'先生成或上传一张图片';$$('.generate-btn:not(#projectBtn)').forEach(b=>b.disabled=state.busy);$('#discardBtn').hidden=!state.source;$('#projectEmpty').hidden=!!state.source;$('#projectBtn').hidden=!state.source;$('#discardBtn').hidden=!state.source;$('#bannerProject').disabled=$('#unlockView').disabled=state.busy;}
@@ -278,7 +280,9 @@ const RP_TABS=[['project','投射'],['layers','图层'],['material','材质'],['
 function showTab(k){state.rpTab=k;$('.right-panel').dataset.active=k;$$('[data-rptab]').forEach(b=>{const on=b.dataset.rptab===k;b.classList.toggle('active',on);b.setAttribute('aria-selected',on);});}
 $$('[data-rptab]').forEach(b=>b.onclick=()=>showTab(b.dataset.rptab));
 showTab('project');
-// Follow the workflow: a pending image → 投射; new layers → 图层 badge; zones computed → 材质.
+// 美术验收面板使用当前场景取证，不触发 AI 请求。
+mountQualityPanel({scene, state, toast});
+mountBatchPanel({toast});
 setInterval(()=>{const n=(scene.getLayers?.()||[]).length;$('#rpBadge-layers').textContent=n||'';$('#rpBadge-project').textContent=state.source?'•':'';},500);
 const _loadSource=loadSource;loadSource=async(...a)=>{const r=await _loadSource(...a);showTab('project');return r;};
 $('#zoneBtn').addEventListener('click',()=>setTimeout(()=>{if(scene.getZones?.())showTab('material');},600));

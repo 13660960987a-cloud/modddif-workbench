@@ -11,8 +11,10 @@ test('automation discovery endpoint returns method list', async () => {
     assert.equal(r.status, 200);
     const j = await r.json();
     assert.equal(j.service, '映纹工坊 自动化接口');
-    assert.ok(j.endpoints['POST /api/automation/generate-six']);
-    assert.ok(j.endpoints['POST /api/automation/shade']);
-    assert.ok(j.endpoints['POST /api/automation/uv-refine']);
+    assert.ok(j.endpoints['GET /api/automation/guide']);
+    assert.equal(j.endpoints['POST /api/automation/generate-six'], undefined);
+    const guide = await fetch(`http://127.0.0.1:${server.address().port}/api/automation/guide`);
+    assert.equal(guide.status, 200);
+    assert.match(await guide.text(), /review-evaluate/);
   } finally { await new Promise(resolve => server.close(resolve)); }
 });

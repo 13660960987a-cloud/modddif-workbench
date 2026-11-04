@@ -1,0 +1,10 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {decideP2Plan,createTripoClient} from '../tripo-client.mjs';
+const id='123e4567-e89b-42d3-a456-426614174000';
+test('P2 规划按编辑需求和特写选择预算',()=>{assert.equal(decideP2Plan({closeup:true}).faceLimit,40000);assert.equal(decideP2Plan({needsQuadEdit:true}).generation.quad,true);assert.throws(()=>decideP2Plan({needsQuadEdit:true,faceLimit:50000}));});
+test('拒绝非官方地址',()=>assert.throws(()=>createTripoClient({apiKey:'test-only',baseUrl:'https://example.org/v3'})));
+test('未批准或面数不合法时不发送请求',async()=>{let count=0;const c=createTripoClient({apiKey:'test-only',fetchImpl:async()=>{count++;}});await assert.rejects(c.generateImage({input:'file_fixture',faceLimit:10000}));await assert.rejects(c.generateImage({input:'file_fixture',faceLimit:50001,approved:true}));await assert.rejects(c.smartUV({input:'file_fixture',approved:true,equivalentTriangles:80001}));assert.equal(count,0);});
+test('生成固定P2参数且不跟随重定向',async()=>{let call;const c=createTripoClient({apiKey:'test-only',fetchImpl:async(url,opts)=>{call={url,opts};return Response.json({code:0,data:{task_id:id}});}});assert.deepEqual(await c.generateImage({input:'file_fixture',faceLimit:40000,approved:true}),{taskId:id});assert.equal(JSON.parse(call.opts.body).model,'P2-20260801');assert.equal(call.opts.redirect,'error');});
+test('上游错误不泄漏密钥或自动重试',async()=>{let count=0;const c=createTripoClient({apiKey:'test-secret',fetchImpl:async()=>{count++;return new Response('test-secret',{status:500});}});await assert.rejects(c.generateImage({input:'file_fixture',faceLimit:10000,approved:true}),e=>!e.message.includes('test-secret'));assert.equal(count,1);});
+test('智能UV必须提交实际面数并保留纹理',async()=>{let body;const c=createTripoClient({apiKey:'test-only',fetchImpl:async(u,o)=>{body=JSON.parse(o.body);return Response.json({code:0,data:{task_id:id}});}});await c.smartUV({input:id,equivalentTriangles:60000,approved:true});assert.equal(body.bake,true);assert.equal(body.model,'default');});

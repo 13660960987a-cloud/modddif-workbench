@@ -6,6 +6,8 @@
 
 ![导入模型和参考图](docs/images/02-model-and-reference.png)
 
+> 本次新增功能属于源码分支；现有 v1.6.1 安装包尚未更新。尚未完成独立 AI 接手实测、真实项目写回验收或完整批量制作链。
+
 ## 下载安装（给同事用）
 
 到右侧 **Releases** 下载对应的安装包，解压即用，不需要安装 Node 或任何其他软件。
@@ -39,7 +41,7 @@
 左侧按 1、2 两步生成，右侧分成 **投射 / 图层 / 材质 / 工具** 四个标签，操作时会自动切到对应的标签。视口上方的提示条会告诉你下一步做什么。可以直接把模型或参考图拖进视口。
 
 1. **① 模型**：导入带 UV 的 GLB / OBJ / FBX（推荐 GLB），单个文件最大 500 MB；参考图和贴图图片也是最大 500 MB。多部件模型会列出部件，可以先隐藏挡在前面的部件。
-2. **② 生成贴图**：上传参考图，点「**一键生成 6 面并投射**」。6 个方向同时生成（每张约 1 分钟，总共约 2 分钟），完成后自动贴到模型上。
+2. **② 生成贴图**：上传参考图，点「**一键生成 6 面并投射**」。界面最多并发 3 个方向生成（实际耗时取决于供应商），完成后自动贴到模型上。
    - 生成结果显示成一排 6 张小图。鼠标移上去可以「用 / ↻ 重做 / ◎ 查看」这一面。
    - 某个角度没贴好：转到那个角度，用「单视角补图」只重做这一面。
    - **局部放大细节**：龙头这类细节多的地方，勾选「局部放大细节」，先把那一块放大到占满画面，再点生成。投射时边缘会自动渐隐，和周围融合。
@@ -137,9 +139,42 @@
 | Gemini 3 Pro | 1024 | 较好 | 约 30 秒 |
 | GPT Image 2.5 | 最高 2048 | 会改轮廓 | 25–41 秒 |
 
-没有模型能原生生成 8K。
+上述实测组合未获得原生 8K，不能据此推断所有供应商和模型。
 
 ---
+
+## AI 自动化与交接
+
+如果要让另一个具备本地浏览器操作能力的 AI 接手，先打开工作台，再让它读取：
+
+```text
+GET http://127.0.0.1:5173/api/automation/guide
+```
+
+也可以先阅读仓库内的 [AI 接手协议](docs/AI_HANDOFF.md)。AI 必须先调用 `capabilities()` 再调用 `status()`，不能依赖之前聊天记录，也不能使用仅开发版的 `window.__workbench`。
+
+页面内入口：
+
+```js
+const api = window.__workbenchAuto;
+const capabilities = await api.capabilities();
+const status = await api.status();
+const evidence = await api['capture-evidence']();
+```
+
+`capabilities()` 会说明当前真实支持的方法、付费操作和未实现能力；`status()` 会报告是否已有任务运行。生成、UV 细化、AO、分区和导出会互斥，上一项未完成时不能并发调用。`capture-evidence()` 只提供当前视口截图，不会自动判断是否为正脸，AI 必须实际看图确认。
+
+当前支持 AI 调用的主要功能：六面贴图生成、自动抠图/去光照、法线细节处理、AO、形状明暗、材质分区、UV 细化、验收规则和导出。Tripo P2 目前只有决策文档和未接入网站的本地模块；批量模型清单与文件替换有独立界面，但尚无自动制作执行队列。
+
+美术验收不能只看全景：必须有整体、真正正脸、脸部特写、左右侧面、纯颜色和材质灯光证据。目标为 9/10，但缺少特写、明显错位、重影或接缝时不能通过。详见 [AI 接手协议](docs/AI_HANDOFF.md) 和 [Tripo P2 决策规范](docs/TRIPO_AI_POLICY.md)。
+
+### 批量任务与安全替换
+
+顶部「批量任务」可以建立多模型处理清单，也可以在人工验收后，将外部 PNG/JPG 逐对写回指定项目目录。写回前会备份、校验 SHA-256，原图发生变化会停止，Unity `.meta` 不会被修改；支持从备份撤回。当前不支持直接覆盖 GLB 内嵌贴图，也不会自动猜测贴图对应关系。批量清单本身只是规划工具，不代表已经自动生成全部模型。
+
+### Tripo P2.0
+
+P2 的本地调用规范见 [docs/TRIPO_AI_POLICY.md](docs/TRIPO_AI_POLICY.md)。密钥只由本地后端读取，不能放进前端或提交仓库。三角面上限 50,000，四边面上限 25,000；智能 UV 要求实际等价三角面不超过 80,000。分部件参数未完成 P2 当前接口验证前，不会盲目发送 `generate_parts`。
 
 ## 开发者
 
@@ -176,7 +211,11 @@ GET http://127.0.0.1:5173/api/automation
 
 | 方法 | 参数 | 说明 |
 |---|---|---|
-| `status()` | 无 | 当前状态：是否有模型、通道、图层数、是否忙 |
+| `capabilities()` | 无 | 返回版本、真实可用方法、付费操作、未实现能力和必须人工检查的项目 |
+| `capture-evidence()` | 无 | 截取当前视口；默认未确认视角 |
+| `review-template(opts)` | `{revision}` | 创建验收模板，不调用 AI |
+| `review-evaluate(opts)` | `{revision, evidence, review}` | 按证据和硬门槛计算辅助验收 |
+| `status()` | 无 | 当前状态、任务 ID、下一步提示 |
 | `generate-six(opts)` | `{channel, faces, size}` | 一键六面生成并投射，默认颜色 4096 |
 | `shade(opts)` | `{size}` | 按模型形状加明暗 |
 | `ao(opts)` | `{size, samples}` | 烘焙 AO |
@@ -195,15 +234,14 @@ await page.evaluate(async () => {
 });
 ```
 
-### postMessage（跨域 iframe / Electron）
+### postMessage（同源窗口消息）
+
+自动化消息只接受当前同源窗口，不支持任意跨域 iframe 控制：
 
 ```js
-window.postMessage({ workbench: { id: '1', method: 'generate-six', params: { channel: 'color' } } }, '*');
-window.addEventListener('message', e => {
-  if (e.data?.workbenchResult?.id === '1') console.log(e.data.workbenchResult);
-});
+window.postMessage({ workbench: { id: '1', method: 'status', params: {} } }, window.location.origin);
 ```
 
 ### HTTP 接口
 
-所有 `/api/*` 接口只接受本机访问，不需要额外鉴权。`/api/generate` 是图片生成的核心；`/api/config` 管理密钥。详见 `GET /api/automation`。
+接口限本机访问，并有 Host / Origin 检查；本地密钥调用和配置修改必须来自允许的工作台来源。没有 HTTP 自动化控制队列。`/api/generate` 是图片生成的核心；`/api/config` 管理密钥。详见 `GET /api/automation`。

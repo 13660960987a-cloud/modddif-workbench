@@ -77,6 +77,8 @@ for (const target of TARGETS) {
     cpSync(distWeb, join(resources, 'web'), { recursive: true });
     cpSync(join(root, 'api-server.mjs'), join(resources, 'api-server.mjs'));
     cpSync(join(root, 'env-config.mjs'), join(resources, 'env-config.mjs'));
+    mkdirSync(join(resources, 'src'), { recursive: true });
+    cpSync(join(root, 'src', 'ai-guide.js'), join(resources, 'src', 'ai-guide.js'));
     cpSync(join(root, 'scripts', 'launcher.mjs'), join(resources, 'launcher.mjs'));
 
     // Shell launcher
@@ -116,6 +118,8 @@ for (const target of TARGETS) {
     cpSync(distWeb, join(appDir, 'web'), { recursive: true });
     cpSync(join(root, 'api-server.mjs'), join(appDir, 'api-server.mjs'));
     cpSync(join(root, 'env-config.mjs'), join(appDir, 'env-config.mjs'));
+    mkdirSync(join(appDir, 'src'), { recursive: true });
+    cpSync(join(root, 'src', 'ai-guide.js'), join(appDir, 'src', 'ai-guide.js'));
     cpSync(join(root, 'scripts', 'launcher.mjs'), join(appDir, 'launcher.mjs'));
 
     // .bat launcher

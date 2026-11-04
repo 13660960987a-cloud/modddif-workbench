@@ -34,8 +34,7 @@ const response = await fetch('/api/generate', {
   method: 'POST',
   headers: {'Content-Type': 'application/json'},
   body: JSON.stringify({
-    baseUrl: 'https://你的图片服务/v1',
-    apiKey: '用户在界面输入的密钥',
+    useServerConfig: true, // 密钥由本机后端读取，调用者不读取或传输密钥
     model: '你的图片模型名称',
     prompt: '红色丝绸材质，保持模型的轮廓和姿态',
     size: '4096x4096',

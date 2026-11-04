@@ -231,23 +231,17 @@ export function createProxyServer({allowedOrigins = DEFAULT_ORIGINS, timeoutMs =
       if (request.url === '/api/automation' && request.method === 'GET') {
         return send(200, {
           service: '映纹工坊 自动化接口',
-          version: '1.5.0',
+          version: '1.6.2',
           endpoints: {
             'GET /api/health': '服务状态',
             'GET /api/config': '接口配置（不含密钥）',
             'POST /api/config': '保存 API 密钥到本机',
             'GET /api/models': '可用的图片模型列表',
             'POST /api/generate': '调用图片模型生成（edits / generations）',
-            'GET /api/automation': '本文档',
-            'POST /api/automation/generate-six': '一键六面生成并投射（需要 page 运行中）',
-            'POST /api/automation/project': '投射待处理图片到 UV',
-            'POST /api/automation/export': '导出贴图（返回 base64）',
-            'POST /api/automation/shade': '按模型形状加明暗',
-            'POST /api/automation/zones': '按颜色分材质',
-            'POST /api/automation/ao': '烘焙 AO',
-            'POST /api/automation/uv-refine': 'UV 细化',
+            'GET /api/automation': '浏览器自动化方法说明（不是 HTTP 控制端点）',
+            'GET /api/automation/guide': 'AI 使用与验收指南',
           },
-          note: '自动化接口通过浏览器页面的 window.__workbench 控制工作台。页面必须打开且已导入模型。所有 POST 都用 JSON，返回 JSON。',
+          note: '自动化方法仅在已打开的同源浏览器页面中通过 window.__workbenchAuto 调用；这里没有未实现的 HTTP 控制端点。页面必须打开且已导入模型。',
         });
       }
       if (request.url !== '/api/generate') return send(404, {error: '接口不存在。'});
