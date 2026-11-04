@@ -104,6 +104,14 @@
 
 ![材质面板](docs/images/03-materials.png)
 
+### 最新功能界面
+
+![当前工作台](docs/images/08-current-workbench.png)
+
+![批量任务](docs/images/09-batch-tasks.png)
+
+![美术验收](docs/images/10-quality-review.png)
+
 ### 导出给引擎
 
 | 文件 | 用于 | 说明 |
