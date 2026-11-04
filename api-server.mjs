@@ -2,7 +2,7 @@ import http from 'node:http';
 import { readServerConfig, saveUserConfig, clearUserConfig } from './env-config.mjs';
 import { pathToFileURL, fileURLToPath } from 'node:url';
 import { readFile, stat } from 'node:fs/promises';
-import { join, normalize, extname, sep } from 'node:path';
+import { join, normalize, extname, sep, dirname } from 'node:path';
 
 const MAX_REQUEST = 96 * 1024 * 1024;
 const MAX_IMAGE = 64 * 1024 * 1024;
