@@ -222,6 +222,12 @@ export function createProxyServer({allowedOrigins = DEFAULT_ORIGINS, timeoutMs =
       }
       if (request.url === '/api/health' && request.method === 'GET') return send(200, {ok: true, service: '本地图片代理'});
       // ── Automation API: lets other programs (AI agents, scripts, Blender add-ons) drive the workbench ──
+      if (request.url === '/api/automation/guide' && request.method === 'GET') {
+        // AI agents read this first to learn how to drive the workbench.
+        const { GUIDE } = await import(pathToFileURL(join(dirname(fileURLToPath(import.meta.url)), 'src', 'ai-guide.js')).href);
+        response.writeHead(200, { 'Content-Type': 'text/markdown; charset=utf-8' });
+        return response.end(GUIDE);
+      }
       if (request.url === '/api/automation' && request.method === 'GET') {
         return send(200, {
           service: '映纹工坊 自动化接口',
