@@ -157,3 +157,53 @@ node scripts/package.mjs   # 打包 Mac arm64 / Mac x64 / Windows x64 安装包�
 - Windows：`%APPDATA%\YingwenWorkbench\api.env`
 
 浏览器内的检查页：`/tests/texture-check.html`（投射、遮挡、法线转换），`/tests/pbr-check.html`（抠图、去光照、贴图转烘焙、AO）。
+
+## AI 自动化接口
+
+映纹工坊可以被其他 AI 或脚本程序化地驱动，不需要人手动点界面。
+
+### 发现
+
+```
+GET http://127.0.0.1:5173/api/automation
+```
+
+返回所有可用的方法和说明。
+
+### 页面内调用（浏览器控制台、Playwright、Puppeteer）
+
+页面加载后 `window.__workbenchAuto` 上有以下异步方法：
+
+| 方法 | 参数 | 说明 |
+|---|---|---|
+| `status()` | 无 | 当前状态：是否有模型、通道、图层数、是否忙 |
+| `generate-six(opts)` | `{channel, faces, size}` | 一键六面生成并投射，默认颜色 4096 |
+| `shade(opts)` | `{size}` | 按模型形状加明暗 |
+| `ao(opts)` | `{size, samples}` | 烘焙 AO |
+| `zones(opts)` | `{count}` | 按颜色分材质 |
+| `uv-refine(opts)` | `{channel, size}` | UV 细化 |
+
+示例（Playwright）：
+
+```js
+await page.evaluate(async () => {
+  const api = window.__workbenchAuto;
+  await api['generate-six']({ channel: 'color', size: 4096 });
+  await api.shade({ size: 4096 });
+  await api.ao({});
+  await api.zones({ count: 6 });
+});
+```
+
+### postMessage（跨域 iframe / Electron）
+
+```js
+window.postMessage({ workbench: { id: '1', method: 'generate-six', params: { channel: 'color' } } }, '*');
+window.addEventListener('message', e => {
+  if (e.data?.workbenchResult?.id === '1') console.log(e.data.workbenchResult);
+});
+```
+
+### HTTP 接口
+
+所有 `/api/*` 接口只接受本机访问，不需要额外鉴权。`/api/generate` 是图片生成的核心；`/api/config` 管理密钥。详见 `GET /api/automation`。

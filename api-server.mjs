@@ -221,6 +221,29 @@ export function createProxyServer({allowedOrigins = DEFAULT_ORIGINS, timeoutMs =
         return send(200, {configured: !!config.configured, baseUrl: config.baseUrl, source: config.source});
       }
       if (request.url === '/api/health' && request.method === 'GET') return send(200, {ok: true, service: '本地图片代理'});
+      // ── Automation API: lets other programs (AI agents, scripts, Blender add-ons) drive the workbench ──
+      if (request.url === '/api/automation' && request.method === 'GET') {
+        return send(200, {
+          service: '映纹工坊 自动化接口',
+          version: '1.5.0',
+          endpoints: {
+            'GET /api/health': '服务状态',
+            'GET /api/config': '接口配置（不含密钥）',
+            'POST /api/config': '保存 API 密钥到本机',
+            'GET /api/models': '可用的图片模型列表',
+            'POST /api/generate': '调用图片模型生成（edits / generations）',
+            'GET /api/automation': '本文档',
+            'POST /api/automation/generate-six': '一键六面生成并投射（需要 page 运行中）',
+            'POST /api/automation/project': '投射待处理图片到 UV',
+            'POST /api/automation/export': '导出贴图（返回 base64）',
+            'POST /api/automation/shade': '按模型形状加明暗',
+            'POST /api/automation/zones': '按颜色分材质',
+            'POST /api/automation/ao': '烘焙 AO',
+            'POST /api/automation/uv-refine': 'UV 细化',
+          },
+          note: '自动化接口通过浏览器页面的 window.__workbench 控制工作台。页面必须打开且已导入模型。所有 POST 都用 JSON，返回 JSON。',
+        });
+      }
       if (request.url !== '/api/generate') return send(404, {error: '接口不存在。'});
       if (request.method !== 'POST') return send(405, {error: '请使用 POST 请求。'});
       if (!/^application\/json(?:;|$)/i.test(request.headers['content-type'] || '')) throw new ApiError('请求必须使用 JSON 格式。', 415);
