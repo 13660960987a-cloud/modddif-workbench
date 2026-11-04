@@ -222,3 +222,18 @@ input[type=range]:disabled{opacity:.35}
 .shade-box{margin:0 0 10px;padding-bottom:10px;border-bottom:1px solid #23272a}
 .shade-box .generate-btn{margin-top:0}
 .shade-box .adjust-grid[hidden]{display:none}
+/* roughness / metalness brush */
+.orm-panel{position:absolute;left:14px;top:50px;z-index:8;width:250px;display:flex;flex-direction:column;gap:7px;padding:10px 12px;background:#15181bee;border:1px solid #2c3135;border-radius:8px;font-size:12px;color:#c9cdd1;pointer-events:auto}
+.orm-panel[hidden]{display:none}
+.orm-row{display:flex;justify-content:space-between;align-items:center;gap:8px}
+.orm-slider{display:grid;grid-template-columns:52px 1fr 36px;align-items:center;gap:6px;color:#9aa0a6}
+.orm-slider output{text-align:right;color:#e3e5e8;font-variant-numeric:tabular-nums}
+.orm-swatches{display:flex;flex-wrap:wrap;gap:4px}
+.orm-swatch{flex:1 0 30%;display:flex;flex-direction:column;align-items:center;padding:3px 0;border:1px solid #33393d;border-radius:4px;cursor:pointer;font:inherit;font-size:11px;color:#c9cdd1;background:linear-gradient(90deg,rgb(var(--v),var(--v),var(--v)) 0 18px,#1c2023 18px)}
+.orm-swatch small{font-size:10px;color:#8a9497}
+.orm-tip{margin:0;font-size:11px;color:#8a9497}
+.orm-tip kbd{display:inline-block;padding:0 4px;margin:0 2px;border:1px solid #444b50;border-radius:3px;font:10px system-ui}
+.orm-brush-canvas{position:absolute;inset:0;width:100%;height:100%;z-index:4;pointer-events:none}
+.orm-brush-canvas.active{pointer-events:auto;cursor:none}
+.orm-brush-canvas.active.orbit{pointer-events:none}
+.orm-brush-canvas.busy{cursor:progress}

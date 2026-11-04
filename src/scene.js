@@ -79,6 +79,16 @@ export function createScene(container, notify = () => {}, onChange = () => {}) {
       const materials = rs.map(r => {
         if (mode === 'WIR') { const m = new THREE.MeshBasicMaterial({ color: 0xe99078, wireframe: true }); previewMaterials.push(m); return m; }
         if (mode === 'NOR') { const m = new THREE.MeshNormalMaterial({ normalMap: r.material.normalMap, normalScale: r.material.normalScale?.clone() || new THREE.Vector2(1, 1) }); previewMaterials.push(m); return m; }
+        if (mode === 'ROU' || mode === 'MET') {
+          // Show one ORM channel as greyscale: white = rough / metal.
+          const tex = r.ormTexture || r.material.roughnessMap || r.material.metalnessMap;
+          const ch = mode === 'ROU' ? 1 : 2, flat = mode === 'ROU' ? r.material.roughness : r.material.metalness;
+          const m = new THREE.ShaderMaterial({ uniforms: { map: { value: tex || null }, hasMap: { value: !!tex }, ch: { value: ch }, uFlat: { value: flat }, flipV: { value: !!(tex && tex.flipY === false) } },
+            vertexShader: 'varying vec2 vUv; void main(){ vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }',
+            fragmentShader: 'uniform sampler2D map; uniform bool hasMap; uniform int ch; uniform float uFlat; varying vec2 vUv; void main(){ float v = uFlat; if (hasMap) { vec4 t = texture2D(map, vUv); v = (ch == 1 ? t.g : t.b) * (ch == 1 ? 1.0 : 1.0); } gl_FragColor = vec4(vec3(v), 1.0); }',
+            side: r.material.side });
+          previewMaterials.push(m); return m;
+        }
         if (mode === 'FLA') { const m = new THREE.MeshBasicMaterial({ map: r.material.map, color: r.material.color, side: r.material.side, transparent: r.material.transparent, opacity: r.material.opacity, alphaTest: r.material.alphaTest }); previewMaterials.push(m); return m; }
         return r.material;
       });
@@ -163,7 +173,7 @@ export function createScene(container, notify = () => {}, onChange = () => {}) {
     controls.update();
   }
   function disposeModel() {
-    group.clear(); records.forEach(r => { r.canvasTexture?.dispose(); r.normalTexture?.dispose(); r.ormTexture?.dispose(); r.emissiveTexture?.dispose(); r.material.dispose(); });
+    group.clear(); records.forEach(r => { r.ormPaint = null; r.canvasTexture?.dispose(); r.normalTexture?.dispose(); r.ormTexture?.dispose(); r.emissiveTexture?.dispose(); r.material.dispose(); });
     meshes.forEach(m => m.geometry.dispose()); previewMaterials.forEach(m => m.dispose());
     previewMaterials = []; records = []; meshes = []; layers = []; history.length = 0; redoStack = [];
   }
@@ -567,6 +577,42 @@ export function createScene(container, notify = () => {}, onChange = () => {}) {
       return { kept, skipped };
     } catch (error) { throw explainGPUError(error, size); } finally { busy = false; }
   }
+  // One brush stroke (screen-space RGBA, alpha = coverage) projected from the live camera into the ORM paint layer.
+  const ormHistory = [];
+  async function paintORM({ image, target = 'roughness', mode = 'paint', aspect }) {
+    if (busy) return;
+    const usable = records.filter(r => r.uv); if (!usable.length) throw new Error('模型没有 UV。');
+    const size = ormOptions.size; busy = true;
+    try {
+      const img = await imageOf(image);
+      camera.updateMatrixWorld(true);
+      const res = await bakeProjection({ renderer, meshes: bakeMeshes(null), clipPlane: bakeClip(null), camera, viewportAspect: aspect, image: img, size, channel: 'color', fade: [.05, .25] });
+      ormHistory.push(usable.map(r => ({ r, prev: r.ormPaint ? { size: r.ormPaint.size, data: r.ormPaint.data.slice() } : null }))); if (ormHistory.length > 20) ormHistory.shift();
+      for (const e of res) {
+        const r = records.find(x => x.key === `${e.mesh.uuid}:${e.materialIndex}`); if (!r) continue;
+        if (!r.ormPaint || r.ormPaint.size !== size) r.ormPaint = { size, data: new Uint8ClampedArray(size * size * 4) };
+        const d = r.ormPaint.data;
+        const sd = e.canvas.getContext('2d').getImageData(0, 0, size, size).data;
+        const vi = target === 'roughness' ? 0 : 1, ai = target === 'roughness' ? 2 : 3;
+        for (let q = 0; q < d.length; q += 4) {
+          const a = sd[q + 3] / 255; if (!a) continue;
+          if (mode === 'erase') { d[q + ai] = d[q + ai] * (1 - a); continue; }
+          const prevA = d[q + ai] / 255, newA = prevA + a * (1 - prevA);
+          d[q + vi] = (d[q + vi] * prevA * (1 - a) + sd[q] * a) / (newA || 1);
+          d[q + ai] = newA * 255;
+        }
+      }
+      for (const r of usable) composeORM(r);
+      setRender(renderMode); emit();
+    } finally { busy = false; }
+  }
+  function undoORMPaint() { const h = ormHistory.pop(); if (!h) return false; for (const { r, prev } of h) r.ormPaint = prev; records.forEach(composeORM); setRender(renderMode); emit(); return true; }
+  function clearORMPaint(target) {
+    for (const r of records) { if (!r.ormPaint) continue; const d = r.ormPaint.data, ai = target === 'roughness' ? 2 : 3;
+      for (let q = 0; q < d.length; q += 4) d[q + ai] = 0; }
+    records.forEach(composeORM); setRender(renderMode); emit();
+  }
+  function setOrbit(on) { if (!viewLock) controls.enabled = on; }
   function setShadeOptions(patch) {
     Object.assign(shadeOptions, patch);
     if ('cavity' in patch || 'edge' in patch) for (const r of records) if (r.shadeData) r.shadeCanvas = buildShadeCanvas({ ...r.shadeData, cavity: shadeOptions.cavity, edge: shadeOptions.edge });
@@ -729,7 +775,7 @@ export function createScene(container, notify = () => {}, onChange = () => {}) {
     } else { ctx.fillStyle = `rgb(255,${Math.round(o.roughness * 255)},${Math.round(o.metalness * 255)})`; ctx.fillRect(0, 0, size, size); }
   }
   function composeORM(record) {
-    const active = record.ormBase || record.aoCanvas || (zones && ormOptions.useZones && record.zoneLabels);
+    const active = record.ormBase || record.aoCanvas || (zones && ormOptions.useZones && record.zoneLabels) || record.ormPaint;
     if (!active) { for (const k of ['aoMap', 'roughnessMap', 'metalnessMap']) record.material[k] = record.original[k]; record.material.roughness = record.original.roughness; record.material.metalness = record.original.metalness; return; }
     const size = ormOptions.size, canvas = record.ormCanvas && record.ormCanvas.width === size ? record.ormCanvas : canvasOf(size); record.ormCanvas = canvas;
     drawORMBase(record, canvas);
@@ -751,6 +797,16 @@ export function createScene(container, notify = () => {}, onChange = () => {}) {
         if (ao) p[q + 1] = Math.min(255, p[q + 1] + (255 - ao[q]) * .25 * (.4 + ormOptions.wear));
       }
       p[q + 3] = 255;
+    }
+    // Brush strokes sit on top of everything else: R = roughness value, G = metalness value, B/A = their coverage.
+    // Stored as a raw array: a canvas premultiplies by alpha and would erase values where coverage is 0.
+    if (record.ormPaint && record.ormPaint.size === size) {
+      const pd = record.ormPaint.data;
+      for (let q = 0; q < p.length; q += 4) {
+        const ar = pd[q + 2] / 255, am = pd[q + 3] / 255;
+        if (ar) p[q + 1] += (pd[q] - p[q + 1]) * ar;
+        if (am) p[q + 2] += (pd[q + 1] - p[q + 2]) * am;
+      }
     }
     ctx.putImageData(im, 0, 0);
     if (!record.ormTexture || record.ormTexture.image !== canvas) { record.ormTexture?.dispose(); record.ormTexture = canvasTexture(canvas, false); }
@@ -783,19 +839,20 @@ export function createScene(container, notify = () => {}, onChange = () => {}) {
     const sourceSizes = [];
     for (let i = 0; i < usable.length; i++) {
       const record = usable[i], canvas = canvasOf(size);
-      const composed = (channel === 'orm' || channel === 'unityMS' || channel === 'unityAO') ? record.ormCanvas : channel === 'emissive' ? record.emissiveCanvas : channel === 'color' ? record.colorCanvas : record.normalCanvas;
-      const hasLayers = (channel === 'orm' || channel === 'unityMS' || channel === 'unityAO') ? !!record.ormCanvas : (channel === 'color' && record.shadeCanvas && shadeOptions.on) || layers.some(l => l.channel === channel && l.visible && l.entries.some(e => e.key === record.key));
+      const composed = (channel === 'orm' || channel === 'unityMS' || channel === 'unityAO' || channel === 'roughness' || channel === 'metalness') ? record.ormCanvas : channel === 'emissive' ? record.emissiveCanvas : channel === 'color' ? record.colorCanvas : record.normalCanvas;
+      const hasLayers = (channel === 'orm' || channel === 'unityMS' || channel === 'unityAO' || channel === 'roughness' || channel === 'metalness') ? !!record.ormCanvas : (channel === 'color' && record.shadeCanvas && shadeOptions.on) || layers.some(l => l.channel === channel && l.visible && l.entries.some(e => e.key === record.key));
       const ctx = canvas.getContext('2d');
       if (!ctx) throw new Error(`浏览器无法创建 ${size}×${size} 画布（内存不足），请改用较低尺寸。`);
-      if (composed && hasLayers) { ctx.drawImage(composed, 0, 0, size, size); sourceSizes.push(composed.width); } else { if (channel === 'orm' || channel === 'unityMS' || channel === 'unityAO') drawORMBase(record, canvas); else drawOriginal(record, channel, canvas); sourceSizes.push(null); }
-      if (channel === 'unityMS' || channel === 'unityAO') {
+      if (composed && hasLayers) { ctx.drawImage(composed, 0, 0, size, size); sourceSizes.push(composed.width); } else { if (channel === 'orm' || channel === 'unityMS' || channel === 'unityAO' || channel === 'roughness' || channel === 'metalness') drawORMBase(record, canvas); else drawOriginal(record, channel, canvas); sourceSizes.push(null); }
+      if (channel === 'unityMS' || channel === 'unityAO' || channel === 'roughness' || channel === 'metalness') {
         const im = ctx.getImageData(0, 0, size, size), d = im.data;
         for (let k = 0; k < d.length; k += 4) { const ao = d[k], rough = d[k + 1], metal = d[k + 2];
+          if (channel === 'roughness' || channel === 'metalness') { const v = channel === 'roughness' ? rough : metal; d[k] = d[k + 1] = d[k + 2] = v; d[k + 3] = 255; continue; }
           if (channel === 'unityMS') { d[k] = d[k + 1] = d[k + 2] = metal; d[k + 3] = 255 - rough; } else { d[k] = d[k + 1] = d[k + 2] = ao; d[k + 3] = 255; } }
         ctx.putImageData(im, 0, 0);
       }
       if (uvDown) flipCanvas(canvas);
-      const saved = await saveCanvas(canvas, `${modelName}-${channel === 'emissive' ? 'Emissive' : channel === 'unityMS' ? 'MetallicSmoothness' : channel === 'unityAO' ? 'AO' : channel === 'orm' ? 'ORM' : channel === 'normal' ? 'Normal-OpenGL' : 'BaseColor'}-${usable.length > 1 ? `${i + 1}-` : ''}${size}.png`);
+      const saved = await saveCanvas(canvas, `${modelName}-${channel === 'roughness' ? 'Roughness' : channel === 'metalness' ? 'Metallic' : channel === 'emissive' ? 'Emissive' : channel === 'unityMS' ? 'MetallicSmoothness' : channel === 'unityAO' ? 'AO' : channel === 'orm' ? 'ORM' : channel === 'normal' ? 'Normal-OpenGL' : 'BaseColor'}-${usable.length > 1 ? `${i + 1}-` : ''}${size}.png`);
       canvas.width = canvas.height = 0;
       if (!saved) throw new Error(`${size}×${size} PNG 编码失败（通常是内存不足），请改用较低尺寸。`);
     }
@@ -822,7 +879,7 @@ export function createScene(container, notify = () => {}, onChange = () => {}) {
         for (const m of meshes) { const pos = m.geometry.attributes.position, v = new THREE.Vector3(); for (let i = 0; i < pos.count; i += 7) { v.fromBufferAttribute(pos, i).applyMatrix4(m.matrixWorld); if (Math.abs(v.y - y) < sz.y * .02) xs.push(v.x); } }
         if (xs.length > 20) { const c = (b.min.x + b.max.x) / 2, w = sz.x * .04; gap = !xs.some(x => Math.abs(x - c) < w) && xs.some(x => x < c) && xs.some(x => x > c); } }
       return { humanoid: tall && gap }; },
-    getUVConvention: () => uvDown ? 'gltf' : 'opengl', transferHires, smoothNormals, bakeAOMap, computeZones, getZones, setZone, highlightZone, uvMatchScore, bakeShapeShade, setShadeOptions, getUvSources, applyUvRefine, hasShade: () => records.some(r => r.shadeCanvas), setORMOptions, getORMOptions: () => ({ ...ormOptions }),
+    getUVConvention: () => uvDown ? 'gltf' : 'opengl', transferHires, smoothNormals, bakeAOMap, computeZones, getZones, setZone, highlightZone, uvMatchScore, bakeShapeShade, setShadeOptions, getUvSources, applyUvRefine, paintORM, undoORMPaint, clearORMPaint, setOrbit, getRenderMode: () => renderMode, hasShade: () => records.some(r => r.shadeCanvas), setORMOptions, getORMOptions: () => ({ ...ormOptions }),
     lockView, unlockView, isViewLocked: () => !!viewLock, setCut, getCut: () => cut && { ...cut }, getParts, setPartVisible, soloPart, showAllParts, captureFaces, viewFrom, projectViews, faces: Object.keys(FACES), getFrameRect, memoryEstimate,
     getGpuLimits: () => gpuLimits(renderer),
     getCompositeSizes: () => records.map(r => ({ key: r.key, color: r.colorCanvas?.width || null, normal: r.normalCanvas?.width || null })),
