@@ -219,3 +219,6 @@ input[type=range]:disabled{opacity:.35}
 .brush-cursor{position:absolute;pointer-events:none;border:1.5px solid #fff;border-radius:50%;box-shadow:0 0 0 1px #000a;z-index:7}
 .brush-cursor[data-mode="erase"]{border-style:dashed;border-color:#f08a7a}
 .brush-cursor[hidden]{display:none}
+.shade-box{margin:0 0 10px;padding-bottom:10px;border-bottom:1px solid #23272a}
+.shade-box .generate-btn{margin-top:0}
+.shade-box .adjust-grid[hidden]{display:none}

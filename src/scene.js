@@ -6,6 +6,8 @@ import { FBXLoader } from 'three/addons/loaders/FBXLoader.js';
 import { transferBake } from './transfer-bake.js';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 import { bakeAO } from './ao-bake.js';
+import { mergeDetail } from './uv-refine.js';
+import { bakeVertexCurvature, normalMapCurvature, buildShadeCanvas, applyShade } from './shape-shade.js';
 import { GLTFExporter } from 'three/addons/exporters/GLTFExporter.js';
 import { bakeProjection, generateNormalMap, gpuLimits, checkBakeSize, accumulateView, accumulateMax, finishAccumulator } from './texture-engine.js';
 
@@ -48,6 +50,7 @@ export function createScene(container, notify = () => {}, onChange = () => {}) {
   let viewLock = null, lockedCamera = null, lockedKey = '';
   // Section cut {axis, keep, offset}: the removed half is hidden in the view, in generation snapshots and in the bake.
   let cut = null, activePlane = null;
+  const shadeOptions = { on: true, cavity: .65, edge: .5, opacity: 1 };
   // glTF UVs put v=0 at the TOP of the image; workbench canvases put v=1 on the first row (flipY=true).
   // Standalone PNGs must follow the model's own convention, or DCC tools map them upside down.
   let uvDown = false;
@@ -221,16 +224,17 @@ export function createScene(container, notify = () => {}, onChange = () => {}) {
     for (const record of records) {
       for (const channel of ['color', 'normal', 'emissive']) {
         const relevant = layers.filter(l => l.channel === channel && l.visible && l.entries.some(e => e.key === record.key));
+        const shaded = channel === 'color' && record.shadeCanvas && shadeOptions.on;
         const materialSlot = { color: 'map', normal: 'normalMap', emissive: 'emissiveMap' }[channel];
         const canvasSlot = { color: 'colorCanvas', normal: 'normalCanvas', emissive: 'emissiveCanvas' }[channel];
         const textureSlot = { color: 'canvasTexture', normal: 'normalTexture', emissive: 'emissiveTexture' }[channel];
-        if (!relevant.length) {
+        if (!relevant.length && !shaded) {
           record.material[materialSlot] = record.original[materialSlot];
           if (channel === 'color') record.material.color.copy(record.original.color);
           if (channel === 'emissive') { record.material.emissive.copy(record.original.emissive || new THREE.Color(0)); record.material.emissiveIntensity = record.original.emissiveIntensity ?? 1; }
           record.material.needsUpdate = true; continue;
         }
-        const size = Math.max(...relevant.map(l => l.entries.find(e => e.key === record.key).canvas.width));
+        const size = Math.max(shaded ? record.shadeCanvas.width : 0, ...relevant.map(l => l.entries.find(e => e.key === record.key).canvas.width));
         const canvas = record[canvasSlot] || canvasOf(size); record[canvasSlot] = canvas;
         if (canvas.width !== size) canvas.width = canvas.height = size;
         drawOriginal(record, channel, canvas);
@@ -242,6 +246,7 @@ export function createScene(container, notify = () => {}, onChange = () => {}) {
           ctx.drawImage(entry.canvas, 0, 0, size, size);
         }
         ctx.globalAlpha = 1;
+        if (shaded) applyShade(ctx, record.shadeCanvas, size, shadeOptions.opacity);
         if(channel==='color' && (record.original.transparent || record.original.alphaTest>0) && record.original.map?.image){
           ctx.save();ctx.globalCompositeOperation='destination-in';
           if(record.original.map.flipY===false){ctx.translate(0,size);ctx.scale(1,-1);}
@@ -512,6 +517,61 @@ export function createScene(container, notify = () => {}, onChange = () => {}) {
     notify(hardSeams ? `已软化 ${hardSeams} 处硬边（接缝顶点 ${seamVerts} 个），法线最大改变 ${maxTurn.toFixed(1)}°。` : `检查了 ${seamVerts} 个接缝顶点：原本已全部是软边，未作改动。`);
     return { hardSeams, seamVerts, maxTurnDeg: maxTurn };
   }
+  // Shape shading: cavity darkening + ridge highlight computed from mesh curvature, normal-map detail and AO.
+  async function bakeShapeShade({ size = 4096 } = {}) {
+    if (busy) throw new Error('正在处理贴图，请稍候。');
+    const usable = records.filter(r => r.uv); if (!usable.length) throw new Error('模型没有 UV。');
+    checkBakeSize(renderer, size); ensureMemory(size, 'bake'); busy = true;
+    try {
+      const t = performance.now();
+      if (!usable.some(r => r.aoCanvas)) { const maps = await bakeAO({ renderer, meshes: meshes.filter(m => m.visible), size, samples: 96 }); for (const r of records) if (maps.has(r.key)) r.aoCanvas = maps.get(r.key); }
+      for (const r of usable) {
+        const { curvature } = bakeVertexCurvature({ renderer, mesh: r.mesh, materialIndex: r.index, size });
+        // Measured: normal-map divergence is per-texel noise on generator bakes (correlation 0.003 with the
+        // mesh), so only the mesh curvature and AO drive shading — both follow the real carved forms.
+        let ao = null; if (r.aoCanvas) { const a = canvasOf(size); a.getContext('2d').drawImage(r.aoCanvas, 0, 0, size, size); const d = a.getContext('2d').getImageData(0, 0, size, size).data; ao = new Uint8Array(size * size); for (let i = 0; i < ao.length; i++) ao[i] = d[i * 4]; a.width = a.height = 0; }
+        r.shadeData = { size, curvature, ao };
+        r.shadeCanvas = buildShadeCanvas({ size, curvature, ao, cavity: shadeOptions.cavity, edge: shadeOptions.edge });
+      }
+      shadeOptions.on = true; recompose();
+      notify(`已按模型形状加明暗（${size}×${size}）：凹处压暗、凸棱提亮，用时 ${((performance.now() - t) / 1000).toFixed(1)} 秒。`);
+      return { ms: performance.now() - t };
+    } catch (error) { throw explainGPUError(error, size); } finally { busy = false; }
+  }
+  // UV refinement: hand the current atlas to the image model, keep only its fine detail.
+  function getUvSources({ channel = 'color', size = 2048 } = {}) {
+    return records.filter(r => r.uv).map(r => { const c = canvasOf(size);
+      if (channel === 'color') { c.getContext('2d').drawImage(colorSource(r, size), 0, 0); }
+      else { drawOriginal(r, 'normal', c); if (r.normalCanvas && layers.some(l => l.channel === 'normal' && l.visible)) c.getContext('2d').drawImage(r.normalCanvas, 0, 0, size, size); }
+      return { key: r.key, image: c.toDataURL('image/png') }; });
+  }
+  async function applyUvRefine({ results, channel = 'color', size = 4096, strength = 1 }) {
+    if (busy) throw new Error('正在处理贴图，请稍候。');
+    checkBakeSize(renderer, size); ensureMemory(size, 'bake'); busy = true;
+    try {
+      const entries = []; let kept = 0, skipped = 0;
+      for (const { key, image } of results) {
+        const r = records.find(x => x.key === key); if (!r) continue;
+        const cur = canvasOf(size); if (channel === 'color') cur.getContext('2d').drawImage(colorSource(r, size), 0, 0); else { drawOriginal(r, 'normal', cur); if (r.normalCanvas) cur.getContext('2d').drawImage(r.normalCanvas, 0, 0, size, size); }
+        const ai = canvasOf(size); ai.getContext('2d').drawImage(await imageOf(image), 0, 0, size, size);
+        const cov = uvMask(r, size).getContext('2d').getImageData(0, 0, size, size).data, coverage = new Uint8Array(size * size);
+        for (let i = 0; i < coverage.length; i++) coverage[i] = cov[i * 4 + 3] > 127 ? 1 : 0;
+        const m = mergeDetail(cur.getContext('2d').getImageData(0, 0, size, size), ai.getContext('2d').getImageData(0, 0, size, size), coverage, { strength, channel });
+        const out = canvasOf(size); out.getContext('2d').putImageData(m.data, 0, 0); entries.push({ key, canvas: out });
+        kept += m.kept; skipped += m.skipped; cur.width = cur.height = ai.width = ai.height = 0;
+      }
+      if (!entries.length) throw new Error('没有可细化的 UV 贴图。');
+      pushHistory(); layers.push({ id: crypto.randomUUID(), name: channel === 'normal' ? 'UV 细化 · 法线' : 'UV 细化 · 颜色', channel, visible: true, opacity: 1, blend: false, thumbnail: thumbnail(entries[0].canvas), entries });
+      recompose();
+      notify(`UV 细化完成：${kept} 块加了细节，${skipped} 块是大片平面已跳过（不会被乱画）。可调图层不透明度控制强弱。`);
+      return { kept, skipped };
+    } catch (error) { throw explainGPUError(error, size); } finally { busy = false; }
+  }
+  function setShadeOptions(patch) {
+    Object.assign(shadeOptions, patch);
+    if ('cavity' in patch || 'edge' in patch) for (const r of records) if (r.shadeData) r.shadeCanvas = buildShadeCanvas({ ...r.shadeData, cavity: shadeOptions.cavity, edge: shadeOptions.edge });
+    recompose(); return { ...shadeOptions };
+  }
   async function bakeAOMap({ size = ormOptions.size, samples = 96 } = {}) {
     if (busy) throw new Error('正在处理贴图，请稍候。');
     checkBakeSize(renderer, size); ensureMemory(size, 'bake'); busy = true;
@@ -724,7 +784,7 @@ export function createScene(container, notify = () => {}, onChange = () => {}) {
     for (let i = 0; i < usable.length; i++) {
       const record = usable[i], canvas = canvasOf(size);
       const composed = (channel === 'orm' || channel === 'unityMS' || channel === 'unityAO') ? record.ormCanvas : channel === 'emissive' ? record.emissiveCanvas : channel === 'color' ? record.colorCanvas : record.normalCanvas;
-      const hasLayers = (channel === 'orm' || channel === 'unityMS' || channel === 'unityAO') ? !!record.ormCanvas : layers.some(l => l.channel === channel && l.visible && l.entries.some(e => e.key === record.key));
+      const hasLayers = (channel === 'orm' || channel === 'unityMS' || channel === 'unityAO') ? !!record.ormCanvas : (channel === 'color' && record.shadeCanvas && shadeOptions.on) || layers.some(l => l.channel === channel && l.visible && l.entries.some(e => e.key === record.key));
       const ctx = canvas.getContext('2d');
       if (!ctx) throw new Error(`浏览器无法创建 ${size}×${size} 画布（内存不足），请改用较低尺寸。`);
       if (composed && hasLayers) { ctx.drawImage(composed, 0, 0, size, size); sourceSizes.push(composed.width); } else { if (channel === 'orm' || channel === 'unityMS' || channel === 'unityAO') drawORMBase(record, canvas); else drawOriginal(record, channel, canvas); sourceSizes.push(null); }
@@ -762,7 +822,7 @@ export function createScene(container, notify = () => {}, onChange = () => {}) {
         for (const m of meshes) { const pos = m.geometry.attributes.position, v = new THREE.Vector3(); for (let i = 0; i < pos.count; i += 7) { v.fromBufferAttribute(pos, i).applyMatrix4(m.matrixWorld); if (Math.abs(v.y - y) < sz.y * .02) xs.push(v.x); } }
         if (xs.length > 20) { const c = (b.min.x + b.max.x) / 2, w = sz.x * .04; gap = !xs.some(x => Math.abs(x - c) < w) && xs.some(x => x < c) && xs.some(x => x > c); } }
       return { humanoid: tall && gap }; },
-    getUVConvention: () => uvDown ? 'gltf' : 'opengl', transferHires, smoothNormals, bakeAOMap, computeZones, getZones, setZone, highlightZone, uvMatchScore, setORMOptions, getORMOptions: () => ({ ...ormOptions }),
+    getUVConvention: () => uvDown ? 'gltf' : 'opengl', transferHires, smoothNormals, bakeAOMap, computeZones, getZones, setZone, highlightZone, uvMatchScore, bakeShapeShade, setShadeOptions, getUvSources, applyUvRefine, hasShade: () => records.some(r => r.shadeCanvas), setORMOptions, getORMOptions: () => ({ ...ormOptions }),
     lockView, unlockView, isViewLocked: () => !!viewLock, setCut, getCut: () => cut && { ...cut }, getParts, setPartVisible, soloPart, showAllParts, captureFaces, viewFrom, projectViews, faces: Object.keys(FACES), getFrameRect, memoryEstimate,
     getGpuLimits: () => gpuLimits(renderer),
     getCompositeSizes: () => records.map(r => ({ key: r.key, color: r.colorCanvas?.width || null, normal: r.normalCanvas?.width || null })),

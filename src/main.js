@@ -1,6 +1,6 @@
 import './style.css';
 import { createScene } from './scene.js';
-import { buildGenerationPrompt } from './generation-prompts.js';
+import { buildGenerationPrompt, buildUvRefinePrompt } from './generation-prompts.js';
 import { matteImage, delightImage, emissiveFilter } from './matting.js';
 import { detailNormal } from './normal-detail.js';
 import { createBrushMask } from './brush-mask.js';
@@ -41,6 +41,8 @@ $('#app').innerHTML=`
         <input id="hiresInput" type="file" accept=".glb" hidden>
         <button class="secondary-button" id="hiresBtn">导入高清原贴图（可选）</button>
         <p class="muted-note">如果模型被重新展过 UV，导入展 UV 之前的原始模型，可找回 4K 细节。</p>
+        <div class="shade-box"><button class="generate-btn secondary-generate" id="shadeBtn">${I('wand',16)}按模型形状加明暗</button><p class="muted-note">按模型的凹凸给颜色贴图加明暗：凹进去的地方压暗，凸起的棱提亮，让雕刻结构清楚。位置完全跟模型走。</p><div class="adjust-grid" id="shadeSliders" hidden><label class="checkbox-row"><input type="checkbox" id="shadeOn" checked>显示明暗</label><label>凹处压暗<output id="shadeCavityValue">65%</output><input id="shadeCavity" type="range" min="0" max="100" value="65"></label><label>凸棱提亮<output id="shadeEdgeValue">50%</output><input id="shadeEdge" type="range" min="0" max="100" value="50"></label></div></div>
+        <div class="shade-box"><button class="generate-btn secondary-generate" id="uvRefineBtn">${I('wand',16)}UV 细化（AI 补细节）</button><p class="muted-note">把整张 UV 贴图和参考图交给 AI 补细节，只保留细小纹理叠加上去，大块颜色和位置不变；大片平面自动跳过。顶部选「法线」时细化法线。约 1 分钟。</p></div>
         <div class="pbr-actions"><button class="secondary-button" id="zoneBtn">分材质</button><button class="secondary-button" id="aoBtn">烘焙 AO</button><button class="secondary-button" id="smoothBtn" title="合并接缝硬边，可撤销">软化边</button></div><p class="muted-note">AO 只写入 ORM 的 R 通道，不会压暗颜色贴图。</p>
         <details class="pbr-advanced"><summary>调整强度（AO、分区、磨损）</summary><div class="adjust-grid"><label>AO 强度<output id="aoStrengthValue">130%</output><input id="aoStrength" type="range" min="0" max="250" value="130"></label><label>材质分区影响<output id="zoneStrengthValue">85%</output><input id="zoneStrength" type="range" min="0" max="100" value="85"></label><label>磨损与脏污<output id="wearValue">50%</output><input id="wear" type="range" min="0" max="100" value="50"></label></div></details>
         <label class="checkbox-row"><input type="checkbox" id="normalBlend" checked>叠加 AI 细节法线（保留原法线）</label>
@@ -69,7 +71,7 @@ function applyServerConfig(c){state.serverConfig=c?.configured?c:null;state.useS
   $('#apiState').textContent=state.serverConfig?`已连接：${c.baseUrl}（${c.source}）。要换密钥，直接填新的再保存。`:'还没有保存密钥。填一次即可，之后打开软件会自动连接。';
   $('#clearApi').hidden=!state.serverConfig||c.source==='下载目录 .env';}
 function openAPI(){$('#apiKey').value='';$('#apiModal').classList.add('open');setTimeout(()=>$('#apiKey').focus(),50);}
-function readDataURL(file){return new Promise((resolve,reject)=>{if(!file?.type.startsWith('image/'))return reject(Error('请选择 PNG、JPG 或 WebP 图片。'));if(file.size>40*1024*1024)return reject(Error('图片超过 40 MB，请先压缩。'));const reader=new FileReader();reader.onload=()=>resolve(reader.result);reader.onerror=()=>reject(Error('图片读取失败。'));reader.readAsDataURL(file);});}
+function readDataURL(file){return new Promise((resolve,reject)=>{if(!file?.type.startsWith('image/'))return reject(Error('请选择 PNG、JPG 或 WebP 图片。'));if(file.size>500*1024*1024)return reject(Error('图片超过 500 MB，请先压缩。'));const reader=new FileReader();reader.onload=()=>resolve(reader.result);reader.onerror=()=>reject(Error('图片读取失败。'));reader.readAsDataURL(file);});}
 async function loadSource(url,name='生成图片',projectionSnapshot=null,generation=null){state.uvMatch=projectionSnapshot?0:await (scene.uvMatchScore?.(url)||0);const image=new Image();image.src=url;await image.decode();state.source={url,name,projectionSnapshot,generation,width:image.naturalWidth,height:image.naturalHeight};state.sources[state.channel]=state.source;await callScene('setTexture',url,{channel:state.channel,name});$('#sourcePreview').innerHTML='<img alt="待投射贴图">';$('#sourcePreview img').src=url;$('#overlayImage').src=url;resetBrush();$('#sourceMeta').textContent=`${name}${projectionSnapshot?' · 已锁定生成视角':''}`;$('#downloadSource').disabled=false;if(projectionSnapshot)callScene('lockView',projectionSnapshot);syncLock();$('#projectionOverlay').classList.add('visible');$('#overlayToggle').classList.add('active');updateOverlay();updateSizeFacts();updateButtons();updateButtons();if(!generation)toast(state.uvMatch>.7?`这张图和模型 UV 吻合（${Math.round(state.uvMatch*100)}%），已把「直接替换」设为主按钮。`:'图片已加载，转到对应角度后投射。');}
 // Three independent numbers: what we asked for, what the provider really returned, what the UV bake will be.
 function updateSizeFacts(){const src=state.source;$('#sizeFacts').hidden=!src;if(!src)return;const g=src.generation;$('#factRequested').textContent=g?.requestedSize||'—（上传图片）';const native=g?.requestedSize&&/^\d+x\d+$/.test(g.requestedSize)&&g.requestedSize!==`${src.width}x${src.height}`;$('#factActual').textContent=`${src.width} × ${src.height}${native?' · 与请求不符':''}`;$('#factActual').classList.toggle('warn',!!native);const bake=state.size;$('#factBake').textContent=`${bake} × ${bake}${src.width<bake?` · 由 ${src.width}px 图片投射，非原生细节`:''}`;$('#factActual').textContent+=g?.matte?` · 已抠底 ${(g.matte.removed*100).toFixed(0)}%`:'';$('#factTime').textContent=g?.timing?`${(g.timing.totalMs/1000).toFixed(1)} 秒${g.timing.upstreamMs?`（服务商 ${(g.timing.upstreamMs/1000).toFixed(1)} 秒）`:''}${g.timing.retries?` · 重试 ${g.timing.retries} 次`:''}`:'—';}
@@ -282,6 +284,22 @@ $('#brushPaint').onclick=()=>ensureBrush().setMode('paint');$('#brushErase').onc
 $('#brushSize').oninput=e=>{ensureBrush().setSize(Number(e.target.value));$('#brushSizeValue').textContent=e.target.value;};
 $('#brushHard').oninput=e=>ensureBrush().setHardness(Number(e.target.value)/100);
 $('#brushAll').onclick=()=>ensureBrush().fillAll();$('#brushNone').onclick=()=>ensureBrush().clear();$('#brushInvert').onclick=()=>ensureBrush().invert();$('#brushUndo').onclick=()=>ensureBrush().undo();
+$('#uvRefineBtn').onclick=()=>{if(state.busy)return;try{checkCanGenerate();}catch(e){return toast(e.message,true);}
+  const channel=state.channel==='normal'?'normal':'color';
+  runTask(channel==='normal'?'正在细化 UV 法线…':'正在细化 UV 颜色贴图…',async()=>{const t0=performance.now();const sources=scene.getUvSources({channel,size:2048});const results=[];
+    const timer=setInterval(()=>status(`UV 细化中 · ${((performance.now()-t0)/1000).toFixed(0)} 秒`),500);
+    try{for(const s of sources){const body={...state.api,model:currentModel(),useServerConfig:state.useServerConfig,prompt:buildUvRefinePrompt({extra:$('#promptInput').value.trim()}),size:$('#apiSize').value.trim()||'4096x4096',mode:'edits',image:s.image,...(state.reference?{reference:state.reference}:{})};
+      // The gateway sometimes answers 502/503 for a moment; retry twice before giving up.
+      let j=null;for(let attempt=0;attempt<3;attempt++){const r=await fetch('/api/generate',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});j=await r.json();
+        if(r.ok)break;if((r.status===502||r.status===503)&&attempt<2){status(`服务商暂时繁忙，${attempt+1} 秒后重试…`);await new Promise(q=>setTimeout(q,3000*(attempt+1)));continue;}
+        throw Error(j.error?.message||j.error||`接口请求失败（${r.status}）`);}
+      results.push({key:s.key,image:j.image});}}
+    finally{clearInterval(timer);}
+    await callScene('applyUvRefine',{results,channel,size:state.size});showTab('layers');});};
+$('#shadeBtn').onclick=()=>runTask('正在按模型形状计算明暗…',async()=>{needModel();await callScene('bakeShapeShade',{size:state.size});$('#shadeSliders').hidden=false;});
+let shadeTimer;const shadeSlide=(id,key,out)=>$(id).oninput=e=>{$(out).textContent=e.target.value+'%';clearTimeout(shadeTimer);shadeTimer=setTimeout(()=>scene.setShadeOptions({[key]:Number(e.target.value)/100}),120);};
+shadeSlide('#shadeCavity','cavity','#shadeCavityValue');shadeSlide('#shadeEdge','edge','#shadeEdgeValue');
+$('#shadeOn').onchange=e=>scene.setShadeOptions({on:e.target.checked});
 refreshLayers();updateButtons();renderParts();syncCut();new ResizeObserver(updateFrame).observe($('#viewport'));updateFrame();
 
 $('#modelSelect').onchange=e=>{showModelFacts(e.target.value);$('#customModel').hidden=e.target.value!=='__custom';if(e.target.value!=='__custom')state.api.model=e.target.value;localStorage.setItem('texture-workbench-model',state.api.model);};
